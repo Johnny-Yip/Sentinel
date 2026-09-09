@@ -242,6 +242,11 @@ def test_held_out_labels_cannot_change_threshold_or_model_selection(
         ].selected_threshold == pytest.approx(
             altered_fold.training_result.models[model_name].selected_threshold
         )
+        assert original_fold.training_result.models[
+            model_name
+        ].feature_importance == altered_fold.training_result.models[
+            model_name
+        ].feature_importance
 
 
 def test_cross_project_run_is_reproducible(multi_dataset) -> None:
@@ -258,6 +263,9 @@ def test_cross_project_run_is_reproducible(multi_dataset) -> None:
         second.feature_importance_stability,
     )
     assert first.model_selection == second.model_selection
+    pd.testing.assert_frame_equal(
+        first.model_feature_importance, second.model_feature_importance
+    )
 
 
 def test_aggregate_metrics_and_pr_auc_lift_are_calculated(
@@ -283,6 +291,9 @@ def test_aggregate_metrics_and_pr_auc_lift_are_calculated(
     assert aggregate["mean_pr_auc_lift"] == pytest.approx(
         logistic_rows["pr_auc_lift"].mean()
     )
+    assert aggregate["mean_accuracy"] == pytest.approx(
+        logistic_rows["accuracy"].mean()
+    )
 
 
 def test_coefficient_and_feature_importance_stability(cross_project_result) -> None:
@@ -299,6 +310,9 @@ def test_coefficient_and_feature_importance_stability(cross_project_result) -> N
     assert coefficients["fold_count"].eq(3).all()
     assert importances["fold_count"].eq(3).all()
     assert importances["mean_importance"].sum() == pytest.approx(1.0)
+    assert len(cross_project_result.model_feature_importance) == (
+        3 * len(MODEL_ORDER) * len(MODEL_FEATURE_COLUMNS)
+    )
 
     feature = coefficients.iloc[0]["feature"]
     actual = []
@@ -354,7 +368,7 @@ def test_all_cross_project_artifacts_are_created(
     }
     assert all(path.exists() for path in paths.values())
     report = json.loads(paths["report_json"].read_text(encoding="utf-8"))
-    assert report["sentinel_version"] == "0.4.0"
+    assert report["sentinel_version"] == "0.5.0"
     assert report["leakage_audit"]["status"] == "passed"
     assert len(pd.read_csv(paths["folds"])) == 3 * 3 * 2
     assert len(pd.read_csv(paths["aggregate"])) == 3

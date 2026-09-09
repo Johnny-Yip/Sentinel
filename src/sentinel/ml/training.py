@@ -23,6 +23,7 @@ from sentinel.ml.data import (
 from sentinel.ml.evaluation import (
     DEFAULT_THRESHOLD,
     calculate_metrics,
+    extract_feature_importance,
     select_f1_threshold,
 )
 from sentinel.ml.models import DEFAULT_RANDOM_STATE, MODEL_ORDER, build_model_pipelines
@@ -43,7 +44,7 @@ class ModelResult:
     validation_selected: dict[str, Any]
     test_default: dict[str, Any]
     test_selected: dict[str, Any]
-    feature_importance: dict[str, list[dict[str, float]]]
+    feature_importance: dict[str, Any]
 
 
 @dataclass
@@ -73,44 +74,51 @@ def _positive_probabilities(pipeline: Pipeline, features: pd.DataFrame) -> np.nd
 
 
 def _feature_importance(
-    name: str, pipeline: Pipeline, feature_columns: Sequence[str], limit: int = 10
-) -> dict[str, list[dict[str, float]]]:
-    model = pipeline.named_steps["model"]
+    name: str,
+    pipeline: Pipeline,
+    feature_columns: Sequence[str],
+    evaluation_features: pd.DataFrame,
+    evaluation_target: np.ndarray,
+    random_state: int,
+    limit: int = 10,
+) -> dict[str, Any]:
+    ranked = extract_feature_importance(
+        pipeline,
+        feature_columns,
+        evaluation_features,
+        evaluation_target,
+        random_state=random_state,
+        limit=limit,
+    )
+    importance: dict[str, Any] = {"ranked_features": ranked}
     if name == "logistic_regression":
-        coefficients = np.asarray(model.coef_[0], dtype=float)
-        pairs = list(zip(feature_columns, coefficients, strict=True))
-        positive = sorted(
-            ((feature, value) for feature, value in pairs if value > 0),
-            key=lambda item: item[1],
-            reverse=True,
-        )[:limit]
+        positive = [record for record in ranked if record["direction"] == "positive"]
         negative = sorted(
-            ((feature, value) for feature, value in pairs if value < 0),
-            key=lambda item: item[1],
-        )[:limit]
-        return {
-            "positive_coefficients": [
-                {"feature": feature, "value": float(value)}
-                for feature, value in positive
-            ],
-            "negative_coefficients": [
-                {"feature": feature, "value": float(value)}
-                for feature, value in negative
-            ],
-        }
-    if name == "random_forest":
-        pairs = sorted(
-            zip(feature_columns, model.feature_importances_, strict=True),
-            key=lambda item: item[1],
-            reverse=True,
-        )[:limit]
-        return {
-            "feature_importances": [
-                {"feature": feature, "value": float(value)}
-                for feature, value in pairs
-            ]
-        }
-    return {}
+            (record for record in ranked if record["direction"] == "negative"),
+            key=lambda record: record["effect"],
+        )
+        importance.update(
+            {
+                "positive_coefficients": [
+                    {"feature": record["feature"], "value": record["effect"]}
+                    for record in positive
+                ],
+                "negative_coefficients": [
+                    {"feature": record["feature"], "value": record["effect"]}
+                    for record in negative
+                ],
+            }
+        )
+    elif name == "random_forest":
+        importance.update(
+            {
+                "feature_importances": [
+                    {"feature": record["feature"], "value": record["effect"]}
+                    for record in ranked
+                ]
+            }
+        )
+    return importance
 
 
 def _selection_key(result: ModelResult) -> tuple[float, float, float]:
@@ -167,9 +175,7 @@ def train_baselines(
             ),
             test_default={},
             test_selected={},
-            feature_importance=_feature_importance(
-                name, pipeline, feature_columns
-            ),
+            feature_importance={},
         )
 
     best_model_name = max(
@@ -190,6 +196,14 @@ def train_baselines(
         )
         model_result.test_selected = calculate_metrics(
             test_target, test_scores, model_result.selected_threshold
+        )
+        model_result.feature_importance = _feature_importance(
+            name,
+            model_result.pipeline,
+            feature_columns,
+            validation_features,
+            validation_target,
+            random_state,
         )
 
     return TrainingResult(

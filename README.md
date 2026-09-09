@@ -1,10 +1,11 @@
 # Sentinel
 
 Sentinel is a machine-learning software engineering project intended to predict
-which Java source files are most likely to be involved in future defects. V4
-adds cross-project evaluation to the V1 repository miner, V2 leakage-safe
-feature pipeline, and V3 reproducible sklearn baselines. It does not expose an
-application service or UI.
+which Java source files are most likely to be involved in future defects. V5
+adds unified evaluation, explainability, and experiment reports to the V1
+repository miner, V2 leakage-safe feature pipeline, V3 reproducible sklearn
+baselines, and V4 cross-project evaluation. It does not expose an application
+service or UI.
 
 ## Pipeline
 
@@ -25,6 +26,9 @@ temporally evaluated V3 baseline + artifacts
         |
         v
 leave-one-project-out V4 report + artifacts
+        |
+        v
+unified V5 evaluation report
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -186,6 +190,7 @@ while finding no future bug-fix events. Accuracy is not reported as the primary
 metric. Sentinel emphasizes PR-AUC (Average Precision), which summarizes the
 precision/recall tradeoff for the rare positive class, while also reporting:
 
+- accuracy;
 - precision, recall, and F1;
 - ROC-AUC;
 - the confusion matrix; and
@@ -328,9 +333,9 @@ rather than learn transferable software-engineering signals.
 ### Metrics and interpretation
 
 Each model is reported at the default threshold `0.5` and its locked
-validation-selected threshold. Held-out metrics include precision, recall, F1,
-ROC-AUC, PR-AUC/Average Precision, confusion matrix, positive prediction rate,
-class prevalence, and PR-AUC lift:
+validation-selected threshold. Held-out metrics include accuracy, precision,
+recall, F1, ROC-AUC, PR-AUC/Average Precision, confusion matrix, positive
+prediction rate, class prevalence, and PR-AUC lift:
 
 ```text
 PR-AUC lift = held-out PR-AUC / held-out positive rate
@@ -393,9 +398,70 @@ whitelist, metadata/label/future-field exclusion, train-only preprocessing,
 validation-only threshold and model selection, and final-evaluation-only use of
 held-out labels.
 
+## V5: unified evaluation and reporting
+
+V5 gives within-project and cross-project experiments one report contract. It
+reuses the existing V3 model registry, chronological splitting, V4
+leave-one-project-out folds, validation-only threshold selection, and leakage
+controls. It does not introduce a second training implementation.
+
+Run a within-project evaluation with:
+
+```bash
+sentinel-evaluate within-project data/commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --random-state 42
+```
+
+Run a cross-project evaluation with:
+
+```bash
+sentinel-evaluate cross-project \
+  data/commons-lang_features.csv \
+  data/commons-io_features.csv \
+  data/commons-collections_features.csv \
+  --output-dir reports/cross-project \
+  --random-state 42
+```
+
+The equivalent module entry point is `python -m sentinel.evaluation`. When
+`--output-dir` is omitted, within-project reports use
+`reports/<dataset-name>-within-project` and cross-project reports use
+`reports/cross-project`.
+
+Each experiment directory contains the common V5 report artifacts:
+
+```text
+reports/<experiment>/
+├── metrics.json
+├── model_comparison.csv
+├── feature_importance.csv
+├── confusion_matrix.png
+└── report.md
+```
+
+`metrics.json` contains the dataset summary, model metrics, selected thresholds,
+and evaluation strategy. `model_comparison.csv` uses the same accuracy,
+precision, recall, F1, ROC-AUC, and PR-AUC pipeline for every model. For
+cross-project evaluation it reports aggregates over held-out folds.
+
+`feature_importance.csv` has one normalized schema for every model. Linear
+models use native coefficients, tree models use native feature importance, and
+models without either interface use deterministic permutation importance. The
+file records the method so values with different semantics are not mistaken for
+directly comparable effects. Cross-project values are aggregated across folds.
+Explainability is calculated only after model and threshold selection are
+locked; it is descriptive and does not alter selection.
+
+For within-project evaluation, `confusion_matrix.png` shows the
+validation-selected model on the temporal test split. For cross-project
+evaluation, it pools the final confusion matrices from the model selected in
+each held-out fold. `report.md` summarizes the dataset, comparison, top feature
+signals, and key findings.
+
 ## Tests
 
-Run the full V1, V2, V3, and V4 test suite:
+Run the full V1 through V5 test suite:
 
 ```bash
 pytest

@@ -54,6 +54,7 @@ class CrossProjectResult:
     aggregate: pd.DataFrame
     coefficient_stability: pd.DataFrame
     feature_importance_stability: pd.DataFrame
+    model_feature_importance: pd.DataFrame
     dataset_shift: pd.DataFrame
     model_selection: list[dict[str, Any]]
     report: dict[str, Any]
@@ -98,6 +99,7 @@ def _metric_row(
         "threshold": enriched["threshold"],
         "validation_pr_auc": validation["pr_auc"],
         "validation_f1": validation["f1"],
+        "accuracy": enriched["accuracy"],
         "precision": enriched["precision"],
         "recall": enriched["recall"],
         "f1": enriched["f1"],
@@ -131,6 +133,7 @@ def _aggregate_metrics(folds: pd.DataFrame) -> pd.DataFrame:
                 "min_pr_auc": pr_auc.min() if not pr_auc.empty else None,
                 "max_pr_auc": pr_auc.max() if not pr_auc.empty else None,
                 "mean_pr_auc_lift": model_rows["pr_auc_lift"].mean(),
+                "mean_accuracy": model_rows["accuracy"].mean(),
                 "mean_f1": model_rows["f1"].mean(),
                 "mean_precision": model_rows["precision"].mean(),
                 "mean_recall": model_rows["recall"].mean(),
@@ -229,6 +232,25 @@ def _feature_importance_stability(
     return pd.DataFrame(rows).sort_values(
         "mean_importance", ascending=False, kind="stable"
     ).reset_index(drop=True)
+
+
+def _model_feature_importance_rows(
+    held_out_repository: str, result: TrainingResult
+) -> list[dict[str, Any]]:
+    """Flatten every model's normalized explainability records for V5 reports."""
+    rows: list[dict[str, Any]] = []
+    for model_name in MODEL_ORDER:
+        for record in result.models[model_name].feature_importance.get(
+            "ranked_features", []
+        ):
+            rows.append(
+                {
+                    "held_out_repository": held_out_repository,
+                    "model": model_name,
+                    **record,
+                }
+            )
+    return rows
 
 
 def _distribution_summary(values: pd.Series) -> tuple[float, float]:
@@ -543,6 +565,7 @@ def run_cross_project_evaluation(
     model_selection: list[dict[str, Any]] = []
     coefficient_rows: list[dict[str, Any]] = []
     importance_rows: list[dict[str, Any]] = []
+    model_importance_rows: list[dict[str, Any]] = []
 
     for fold in folds:
         if progress:
@@ -572,6 +595,11 @@ def run_cross_project_evaluation(
         )
         importance_rows.extend(
             _feature_importance_rows(fold.held_out_repository, training_result)
+        )
+        model_importance_rows.extend(
+            _model_feature_importance_rows(
+                fold.held_out_repository, training_result
+            )
         )
         evaluation = FoldEvaluation(
             fold, training_result if retain_models else None, audit
@@ -604,6 +632,7 @@ def run_cross_project_evaluation(
     aggregate = _aggregate_metrics(folds_frame)
     coefficient_stability = _coefficient_stability(coefficient_rows)
     importance_stability = _feature_importance_stability(importance_rows)
+    model_feature_importance = pd.DataFrame(model_importance_rows)
     dataset_shift = _dataset_shift(evaluations)
     same_project = _same_project_comparison(same_project_metadata, folds_frame)
     interpretation = _generalization_interpretation(
@@ -638,6 +667,7 @@ def run_cross_project_evaluation(
         "aggregate_metrics": _json_records(aggregate),
         "coefficient_stability": _json_records(coefficient_stability),
         "feature_importance_stability": _json_records(importance_stability),
+        "model_feature_importance": _json_records(model_feature_importance),
         "dataset_shift": _json_records(dataset_shift),
         "same_project_comparison": same_project,
         "generalization_interpretation": interpretation,
@@ -658,6 +688,7 @@ def run_cross_project_evaluation(
         aggregate=aggregate,
         coefficient_stability=coefficient_stability,
         feature_importance_stability=importance_stability,
+        model_feature_importance=model_feature_importance,
         dataset_shift=dataset_shift,
         model_selection=model_selection,
         report=report,

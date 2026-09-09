@@ -44,6 +44,7 @@ def _comparison_rows(result: TrainingResult) -> Iterable[list[str]]:
                 MODEL_LABELS[name],
                 split_name,
                 f"{model.selected_threshold:.4f}",
+                _metric(metrics["accuracy"]),
                 _metric(metrics["precision"]),
                 _metric(metrics["recall"]),
                 _metric(metrics["f1"]),
@@ -76,7 +77,18 @@ def print_model_report(result: TrainingResult) -> None:
     """Print thresholds, metrics, confusion matrices, and feature signals."""
     print("\nSelected-threshold comparison (PR-AUC is the primary metric)")
     _print_table(
-        ["Model", "Split", "Thresh", "Precision", "Recall", "F1", "ROC-AUC", "PR-AUC", "Pred +"],
+        [
+            "Model",
+            "Split",
+            "Thresh",
+            "Accuracy",
+            "Precision",
+            "Recall",
+            "F1",
+            "ROC-AUC",
+            "PR-AUC",
+            "Pred +",
+        ],
         list(_comparison_rows(result)),
     )
 
@@ -89,7 +101,8 @@ def print_model_report(result: TrainingResult) -> None:
             ("test", model.test_default, model.test_selected),
         ):
             print(
-                f"    {split_name} @ 0.5: precision={_metric(default['precision'])}, "
+                f"    {split_name} @ 0.5: accuracy={_metric(default['accuracy'])}, "
+                f"precision={_metric(default['precision'])}, "
                 f"recall={_metric(default['recall'])}, f1={_metric(default['f1'])}, "
                 f"ROC-AUC={_metric(default['roc_auc'])}, "
                 f"PR-AUC={_metric(default['pr_auc'])}, "
@@ -98,6 +111,7 @@ def print_model_report(result: TrainingResult) -> None:
             _print_confusion(f"{split_name} @ 0.5", default)
             print(
                 f"    {split_name} @ selected: "
+                f"accuracy={_metric(selected['accuracy'])}, "
                 f"precision={_metric(selected['precision'])}, "
                 f"recall={_metric(selected['recall'])}, f1={_metric(selected['f1'])}, "
                 f"ROC-AUC={_metric(selected['roc_auc'])}, "

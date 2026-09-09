@@ -69,7 +69,8 @@ def print_cross_project_report(result: CrossProjectResult) -> None:
                     "0.5" if row.threshold_strategy == "default_0_5" else "selected"
                 )
                 print(
-                    f"      test @ {strategy}: precision={_metric(row.precision)}, "
+                    f"      test @ {strategy}: accuracy={_metric(row.accuracy)}, "
+                    f"precision={_metric(row.precision)}, "
                     f"recall={_metric(row.recall)}, F1={_metric(row.f1)}, "
                     f"ROC-AUC={_metric(row.roc_auc)}, PR-AUC={_metric(row.pr_auc)}, "
                     f"lift={_metric(row.pr_auc_lift)}, pred+={_metric(row.positive_prediction_rate)}, "
@@ -83,7 +84,9 @@ def print_cross_project_report(result: CrossProjectResult) -> None:
             f"  {MODEL_LABELS[row.model]}: mean PR-AUC={_metric(row.mean_pr_auc)}, "
             f"median={_metric(row.median_pr_auc)}, std={_metric(row.std_pr_auc)}, "
             f"range={_metric(row.min_pr_auc)}..{_metric(row.max_pr_auc)}, "
-            f"mean lift={_metric(row.mean_pr_auc_lift)}, mean F1={_metric(row.mean_f1)}, "
+            f"mean lift={_metric(row.mean_pr_auc_lift)}, "
+            f"mean accuracy={_metric(row.mean_accuracy)}, "
+            f"mean F1={_metric(row.mean_f1)}, "
             f"mean precision={_metric(row.mean_precision)}, "
             f"mean recall={_metric(row.mean_recall)}, "
             f"mean ROC-AUC={_metric(row.mean_roc_auc)}"
@@ -208,6 +211,7 @@ def build_markdown_report(result: CrossProjectResult) -> str:
                 "Model",
                 "Selected",
                 "Threshold",
+                "Accuracy",
                 "Precision",
                 "Recall",
                 "F1",
@@ -222,6 +226,7 @@ def build_markdown_report(result: CrossProjectResult) -> str:
                     MODEL_LABELS[row.model],
                     "yes" if row.is_selected_model else "no",
                     f"{row.threshold:.4f}",
+                    _metric(row.accuracy),
                     _metric(row.precision),
                     _metric(row.recall),
                     _metric(row.f1),
@@ -245,6 +250,7 @@ def build_markdown_report(result: CrossProjectResult) -> str:
                 "Min",
                 "Max",
                 "Mean lift",
+                "Mean accuracy",
                 "Mean F1",
                 "Mean precision",
                 "Mean recall",
@@ -259,6 +265,7 @@ def build_markdown_report(result: CrossProjectResult) -> str:
                     _metric(row.min_pr_auc),
                     _metric(row.max_pr_auc),
                     _metric(row.mean_pr_auc_lift),
+                    _metric(row.mean_accuracy),
                     _metric(row.mean_f1),
                     _metric(row.mean_precision),
                     _metric(row.mean_recall),

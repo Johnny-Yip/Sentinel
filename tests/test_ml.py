@@ -166,6 +166,7 @@ def test_all_baseline_models_train_and_evaluate(trained_result) -> None:
         ):
             assert set(metrics) == {
                 "threshold",
+                "accuracy",
                 "precision",
                 "recall",
                 "f1",
@@ -183,6 +184,7 @@ def test_metric_calculation_includes_confusion_and_rare_class_metrics() -> None:
         threshold=0.5,
     )
 
+    assert metrics["accuracy"] == pytest.approx(0.75)
     assert metrics["precision"] == pytest.approx(2 / 3)
     assert metrics["recall"] == 1.0
     assert metrics["f1"] == pytest.approx(0.8)
@@ -197,6 +199,7 @@ def test_metric_edge_case_without_positive_labels_is_clean() -> None:
 
     assert metrics["roc_auc"] is None
     assert metrics["pr_auc"] is None
+    assert metrics["accuracy"] == 1
     assert metrics["precision"] == 0
     assert metrics["recall"] == 0
     assert metrics["f1"] == 0
@@ -226,6 +229,9 @@ def test_test_labels_cannot_change_validation_threshold_selection(validated_data
         assert first.models[name].selected_threshold == pytest.approx(
             second.models[name].selected_threshold
         )
+        assert first.models[name].feature_importance == (
+            second.models[name].feature_importance
+        )
 
 
 def test_artifacts_include_pipeline_and_required_metadata(
@@ -238,7 +244,7 @@ def test_artifacts_include_pipeline_and_required_metadata(
     assert pipeline.predict_proba(
         trained_result.splits.test[MODEL_FEATURE_COLUMNS].iloc[:2]
     ).shape == (2, 2)
-    assert metadata["sentinel_version"] == "0.4.0"
+    assert metadata["sentinel_version"] == "0.5.0"
     assert metadata["model_type"] == trained_result.best_model_name
     assert metadata["feature_columns"] == MODEL_FEATURE_COLUMNS
     assert metadata["selected_threshold"] == pytest.approx(
@@ -264,6 +270,24 @@ def test_training_is_reproducible(validated_data) -> None:
         assert (
             first.models[name].feature_importance
             == second.models[name].feature_importance
+        )
+
+
+def test_feature_importance_uses_native_and_fallback_methods(trained_result) -> None:
+    expected_methods = {
+        "dummy": "permutation_average_precision",
+        "logistic_regression": "native_coefficient",
+        "random_forest": "native_feature_importance",
+    }
+    for name, expected_method in expected_methods.items():
+        ranked = trained_result.models[name].feature_importance["ranked_features"]
+        assert len(ranked) == len(MODEL_FEATURE_COLUMNS)
+        assert {record["method"] for record in ranked} == {expected_method}
+        assert [record["rank"] for record in ranked] == list(
+            range(1, len(MODEL_FEATURE_COLUMNS) + 1)
+        )
+        assert {record["feature"] for record in ranked} == set(
+            MODEL_FEATURE_COLUMNS
         )
 
 

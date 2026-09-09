@@ -11,7 +11,11 @@ from sentinel.ml.data import (
     load_dataset,
     validate_dataset,
 )
-from sentinel.ml.evaluation import calculate_metrics, select_f1_threshold
+from sentinel.ml.evaluation import (
+    calculate_metrics,
+    extract_feature_importance,
+    select_f1_threshold,
+)
 from sentinel.ml.splitting import TemporalSplits, chronological_split
 from sentinel.ml.training import TrainingResult, save_artifacts, train_baselines
 
@@ -27,6 +31,7 @@ __all__ = [
     "TrainingResult",
     "calculate_metrics",
     "chronological_split",
+    "extract_feature_importance",
     "load_dataset",
     "save_artifacts",
     "select_f1_threshold",
