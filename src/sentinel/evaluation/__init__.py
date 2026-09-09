@@ -1,5 +1,10 @@
 """Unified Sentinel evaluation and risk report generation."""
 
+from sentinel.evaluation.explain import (
+    add_top_explanations_to_ranking,
+    build_explanation_summary,
+    explain_predictions,
+)
 from sentinel.evaluation.experiment import (
     EvaluationReport,
     evaluate_cross_project,
@@ -15,6 +20,9 @@ from sentinel.ml.evaluation import calculate_metrics, extract_feature_importance
 
 __all__ = [
     "EvaluationReport",
+    "explain_predictions",
+    "build_explanation_summary",
+    "add_top_explanations_to_ranking",
     "calculate_metrics",
     "calculate_risk_scores",
     "build_risk_ranking",

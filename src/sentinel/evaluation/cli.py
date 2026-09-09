@@ -71,6 +71,14 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
             f"(default: {DEFAULT_RISK_THRESHOLD})"
         ),
     )
+    parser.add_argument(
+        "--explain-top-k",
+        type=_positive_integer,
+        help=(
+            "Maximum feature-contribution rows per evaluated sample "
+            "(default: explain all features)"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -117,6 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 random_state=args.random_state,
                 top_risk=args.top_risk,
                 risk_threshold=args.risk_threshold,
+                explain_top_k=args.explain_top_k,
                 progress=print,
             )
         else:
@@ -128,6 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 same_project_metadata=args.same_project_metadata,
                 top_risk=args.top_risk,
                 risk_threshold=args.risk_threshold,
+                explain_top_k=args.explain_top_k,
                 progress=print,
             )
         paths = save_evaluation_report(report, output_dir)

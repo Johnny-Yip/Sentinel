@@ -2,10 +2,11 @@
 
 Sentinel is a machine-learning software engineering project intended to predict
 which Java source files are most likely to be involved in future defects. V6
-adds snapshot-level defect-risk scoring and ranking to V5's unified evaluation,
-explainability, and experiment reports. It builds on the V1 repository miner,
-V2 leakage-safe feature pipeline, V3 reproducible sklearn baselines, and V4
-cross-project evaluation. It does not expose an application service or UI.
+adds snapshot-level defect-risk scoring, ranking, and individual prediction
+explanations to V5's unified evaluation and experiment reports. It builds on
+the V1 repository miner, V2 leakage-safe feature pipeline, V3 reproducible
+sklearn baselines, and V4 cross-project evaluation. It does not expose an
+application service or UI.
 
 ## Pipeline
 
@@ -31,7 +32,7 @@ leave-one-project-out V4 report + artifacts
 unified V5 evaluation report
         |
         v
-ranked V6 file/snapshot risk report
+ranked and locally explained V6 file/snapshot risk report
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -509,6 +510,61 @@ sentinel-evaluate cross-project \
 In cross-project reports, independently selected fold models may have different
 decision thresholds. The CSV records the model and threshold used for each row
 so that the pooled ranking remains auditable.
+
+## V6 Phase 2: individual prediction explanations
+
+Phase 2 explains every sample in the final evaluation population: the temporal
+test split for within-project evaluation and every held-out repository row for
+cross-project evaluation. This is local explanation, which answers why the
+selected fitted model assigned one snapshot its risk score. It differs from
+`feature_importance.csv`, which summarizes a feature's overall model-level
+importance and cannot explain a particular prediction.
+
+For Logistic Regression, Sentinel multiplies each fitted coefficient by the
+sample's transformed value after the training-fitted scaler. These exact
+additive contributions are in log-odds space. For classifier trees and Random
+Forests, Sentinel attributes the positive-class probability change along the
+sample's decision path to each split feature and averages across trees. Other
+estimators use a deterministic local fallback: replace one raw feature at a
+time with that evaluation partition's median and measure the risk-score change.
+No SHAP dependency is required.
+
+A positive contribution (`increases_risk`) pushes the prediction toward higher
+defect risk relative to that method's baseline; a negative contribution
+(`decreases_risk`) is protective; an exact zero is `neutral`. Raw contribution
+units differ by method and should not be compared across model families.
+`normalized_contribution` is the feature's share of the sample's total absolute
+contribution magnitude, so non-zero shares sum to approximately `1` for each
+sample. `feature_value` is the raw value when preprocessing is one-to-one, and
+`model_input_value` records the actual transformed value used by the model.
+
+Both `sentinel-evaluate` modes now also generate:
+
+- `prediction_explanations.csv`, with one row per explained feature and sample,
+  including identifiers, prediction fields, raw and normalized contributions,
+  direction, method, and deterministic local rank;
+- `explanation_summary.json`, with explained row counts, common increasing and
+  decreasing features, average absolute contribution by feature, and model and
+  method metadata; and
+- four concise columns in `risk_ranking.csv`: the strongest risk-increasing and
+  risk-decreasing feature and contribution for each sample.
+
+All eight historical predictors are explained by default. Limit only the
+detailed CSV rows (while retaining the strongest positive and negative ranking
+drivers) with `--explain-top-k`:
+
+```bash
+sentinel-evaluate within-project data/commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --explain-top-k 5
+
+sentinel-evaluate cross-project \
+  data/commons-lang_features.csv \
+  data/commons-io_features.csv \
+  data/commons-collections_features.csv \
+  --output-dir reports/cross-project \
+  --explain-top-k 5
+```
 
 ## Tests
 

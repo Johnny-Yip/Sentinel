@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from sentinel.evaluation.explain import build_explanation_summary
 from sentinel.evaluation.experiment import EvaluationReport
 
 
@@ -21,6 +22,8 @@ REPORT_FILENAMES = {
     "summary": "report.md",
     "risk_ranking": "risk_ranking.csv",
     "risk_summary": "risk_summary.json",
+    "prediction_explanations": "prediction_explanations.csv",
+    "explanation_summary": "explanation_summary.json",
 }
 
 
@@ -135,6 +138,9 @@ def _importance_table(frame: pd.DataFrame) -> list[str]:
 def build_markdown_report(report: EvaluationReport) -> str:
     """Build a concise report from the same normalized data saved to CSV/JSON."""
     dataset = report.dataset_summary
+    explanation_summary = report.explanation_summary or build_explanation_summary(
+        report.prediction_explanations
+    )
     lines = [
         "# Sentinel V6 evaluation report",
         "",
@@ -171,13 +177,24 @@ def build_markdown_report(report: EvaluationReport) -> str:
         f"- Mean risk score: {_metric(report.risk_summary['mean_risk_score'])}",
         f"- Maximum risk score: {_metric(report.risk_summary['max_risk_score'])}",
         "",
+        "## Individual prediction explanations",
+        "",
+        f"- Explained samples: "
+        f"{explanation_summary['total_explained_samples']:,}",
+        f"- Feature contributions: "
+        f"{explanation_summary['total_explained_feature_contributions']:,}",
+        "- Positive contributions increase predicted defect risk; negative "
+        "contributions decrease it.",
+        "",
         "## Artifacts",
         "",
         "Machine-readable metrics and comparisons are in `metrics.json`, "
         "`model_comparison.csv`, and `feature_importance.csv`. The selected "
         "evaluation confusion matrix is in `confusion_matrix.png`. Sample-level "
         "risk ordering and its summary are in `risk_ranking.csv` and "
-        "`risk_summary.json`.",
+        "`risk_summary.json`. Local feature-level contributions and their "
+        "aggregate summary are in `prediction_explanations.csv` and "
+        "`explanation_summary.json`.",
         "",
     ]
     return "\n".join(lines)
@@ -252,6 +269,17 @@ def save_evaluation_report(
     report.risk_ranking.to_csv(paths["risk_ranking"], index=False)
     paths["risk_summary"].write_text(
         json.dumps(_json_safe(report.risk_summary), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report.prediction_explanations.to_csv(
+        paths["prediction_explanations"], index=False
+    )
+    explanation_summary = report.explanation_summary or build_explanation_summary(
+        report.prediction_explanations
+    )
+    paths["explanation_summary"].write_text(
+        json.dumps(_json_safe(explanation_summary), indent=2, sort_keys=True)
+        + "\n",
         encoding="utf-8",
     )
     _save_confusion_matrix(

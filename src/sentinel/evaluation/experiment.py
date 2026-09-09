@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,14 @@ import pandas as pd
 from sentinel import __version__
 from sentinel.cross_project.data import MultiRepositoryDataset
 from sentinel.cross_project.experiment import run_cross_project_evaluation
+from sentinel.evaluation.explain import (
+    EXPLANATION_COLUMNS,
+    add_top_explanations_to_ranking,
+    build_explanation_summary,
+    explain_predictions,
+    limit_explanations,
+    sort_explanations,
+)
 from sentinel.evaluation.risk import (
     DEFAULT_RISK_THRESHOLD,
     DEFAULT_TOP_RISK,
@@ -45,6 +53,10 @@ class EvaluationReport:
     key_findings: tuple[str, ...]
     risk_ranking: pd.DataFrame
     risk_summary: dict[str, Any]
+    prediction_explanations: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=EXPLANATION_COLUMNS)
+    )
+    explanation_summary: dict[str, Any] = field(default_factory=dict)
 
 
 def _date_range(data: pd.DataFrame) -> dict[str, str]:
@@ -147,9 +159,10 @@ def evaluate_within_project(
     random_state: int = DEFAULT_RANDOM_STATE,
     top_risk: int = DEFAULT_TOP_RISK,
     risk_threshold: float = DEFAULT_RISK_THRESHOLD,
+    explain_top_k: int | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
-    """Run V3 temporal evaluation and normalize it to the V5 report contract."""
+    """Run V3 temporal evaluation under the unified V6 report contract."""
     result = train_baselines(
         chronological_split(data),
         random_state=random_state,
@@ -185,6 +198,25 @@ def evaluate_within_project(
         score_method=best.score_method,
         decision_threshold=best.selected_threshold,
     )
+    full_explanations = explain_predictions(
+        best.pipeline,
+        result.splits.test,
+        result.feature_columns,
+        best.test_scores,
+        model=result.best_model_name,
+        evaluation_mode="within_project_temporal_test",
+        decision_threshold=best.selected_threshold,
+        reference_features=result.splits.test,
+    )
+    risk_ranking = add_top_explanations_to_ranking(
+        risk_ranking, full_explanations
+    )
+    prediction_explanations = sort_explanations(
+        limit_explanations(full_explanations, explain_top_k)
+    )
+    explanation_summary = build_explanation_summary(
+        prediction_explanations, explain_top_k=explain_top_k
+    )
     risk_summary = build_risk_summary(
         risk_ranking,
         top_risk=top_risk,
@@ -207,6 +239,8 @@ def evaluate_within_project(
         key_findings=findings,
         risk_ranking=risk_ranking,
         risk_summary=risk_summary,
+        prediction_explanations=prediction_explanations,
+        explanation_summary=explanation_summary,
     )
 
 
@@ -275,9 +309,10 @@ def evaluate_cross_project(
     same_project_metadata: str | Path | None = None,
     top_risk: int = DEFAULT_TOP_RISK,
     risk_threshold: float = DEFAULT_RISK_THRESHOLD,
+    explain_top_k: int | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
-    """Run V4 leave-one-project-out evaluation under the V5 report contract."""
+    """Run V4 leave-one-project-out evaluation under the V6 report contract."""
     result = run_cross_project_evaluation(
         dataset,
         random_state=random_state,
@@ -339,6 +374,7 @@ def evaluate_cross_project(
     risk_models: list[str] = []
     risk_methods: list[str] = []
     risk_thresholds: list[float] = []
+    explanation_frames: list[pd.DataFrame] = []
     for fold_evaluation in result.fold_evaluations:
         training_result = fold_evaluation.training_result
         # Defensive guard for the retained-model contract.
@@ -351,6 +387,18 @@ def evaluate_cross_project(
         risk_models.extend([training_result.best_model_name] * row_count)
         risk_methods.extend([model.score_method] * row_count)
         risk_thresholds.extend([model.selected_threshold] * row_count)
+        explanation_frames.append(
+            explain_predictions(
+                model.pipeline,
+                fold_evaluation.fold.test,
+                training_result.feature_columns,
+                model.test_scores,
+                model=training_result.best_model_name,
+                evaluation_mode="cross_project_held_out_folds",
+                decision_threshold=model.selected_threshold,
+                reference_features=fold_evaluation.fold.test,
+            )
+        )
     combined_samples = pd.concat(risk_samples, ignore_index=True)
     risk_ranking = build_risk_ranking(
         combined_samples,
@@ -359,6 +407,16 @@ def evaluate_cross_project(
         evaluation_mode="cross_project_held_out_folds",
         score_method=risk_methods,
         decision_threshold=risk_thresholds,
+    )
+    full_explanations = pd.concat(explanation_frames, ignore_index=True)
+    risk_ranking = add_top_explanations_to_ranking(
+        risk_ranking, full_explanations
+    )
+    prediction_explanations = sort_explanations(
+        limit_explanations(full_explanations, explain_top_k)
+    )
+    explanation_summary = build_explanation_summary(
+        prediction_explanations, explain_top_k=explain_top_k
     )
     risk_summary = build_risk_summary(
         risk_ranking,
@@ -380,4 +438,6 @@ def evaluate_cross_project(
         key_findings=findings,
         risk_ranking=risk_ranking,
         risk_summary=risk_summary,
+        prediction_explanations=prediction_explanations,
+        explanation_summary=explanation_summary,
     )

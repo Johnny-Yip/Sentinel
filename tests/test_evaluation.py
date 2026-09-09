@@ -8,6 +8,12 @@ import pandas as pd
 
 from sentinel.cross_project.data import load_multi_repository_datasets
 from sentinel.evaluation.cli import main
+from sentinel.evaluation.explain import (
+    EXPLANATION_COLUMNS,
+    add_top_explanations_to_ranking,
+    build_explanation_summary,
+    explain_predictions,
+)
 from sentinel.evaluation.experiment import (
     EvaluationReport,
     evaluate_cross_project,
@@ -67,21 +73,35 @@ def make_feature_data(repository: str, *, offset: int = 0) -> pd.DataFrame:
 
 
 def sample_report() -> EvaluationReport:
+    scores = np.array([0.1, 0.9, 0.4, 0.8])
     samples = pd.DataFrame(
         {
             "repository": ["owner/example"] * 4,
             "file_path": [f"src/File{index}.java" for index in range(4)],
             "snapshot_date": pd.date_range("2021-01-31", periods=4, freq="ME"),
             "defect_next_90_days": [0, 1, 0, 1],
+            "score": scores,
         }
     )
     risk_ranking = build_risk_ranking(
         samples,
-        np.array([0.1, 0.9, 0.4, 0.8]),
+        scores,
         model="example",
         evaluation_mode="within_project_temporal_test",
         score_method="predict_proba",
         decision_threshold=0.5,
+    )
+    prediction_explanations = explain_predictions(
+        ProbabilityClassifier(),
+        samples,
+        ["score"],
+        scores,
+        model="example",
+        evaluation_mode="within_project_temporal_test",
+        decision_threshold=0.5,
+    )
+    risk_ranking = add_top_explanations_to_ranking(
+        risk_ranking, prediction_explanations
     )
     return EvaluationReport(
         experiment_type="within_project",
@@ -139,6 +159,8 @@ def sample_report() -> EvaluationReport:
             selected_model="example",
             evaluation_mode="within_project_temporal_test",
         ),
+        prediction_explanations=prediction_explanations,
+        explanation_summary=build_explanation_summary(prediction_explanations),
     )
 
 
@@ -212,6 +234,14 @@ def test_report_generation_writes_v5_artifacts_plus_v6_risk_outputs(
     assert risk_summary["total_samples"] == 4
     assert risk_summary["high_risk_sample_count"] == 2
     assert len(risk_summary["top_high_risk_samples"]) == 2
+    explanations = pd.read_csv(paths["prediction_explanations"])
+    assert list(explanations.columns) == list(EXPLANATION_COLUMNS)
+    assert len(explanations) == 4
+    explanation_summary = json.loads(
+        paths["explanation_summary"].read_text(encoding="utf-8")
+    )
+    assert explanation_summary["total_explained_samples"] == 4
+    assert explanation_summary["total_explained_feature_contributions"] == 4
     assert paths["confusion_matrix"].read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     markdown = paths["summary"].read_text(encoding="utf-8")
     assert "# Sentinel V6 evaluation report" in markdown
@@ -237,6 +267,8 @@ def test_within_project_cli_creates_complete_report(
             "2",
             "--risk-threshold",
             "0.8",
+            "--explain-top-k",
+            "3",
         ]
     )
 
@@ -253,6 +285,17 @@ def test_within_project_cli_creates_complete_report(
     assert summary["risk_threshold"] == 0.8
     assert len(summary["top_high_risk_samples"]) <= 2
     assert ranking["risk_score"].between(0, 1).all()
+    explanations = pd.read_csv(destination / "prediction_explanations.csv")
+    explanation_summary = json.loads(
+        (destination / "explanation_summary.json").read_text()
+    )
+    assert len(explanations) == len(ranking) * 3
+    assert explanation_summary["total_explained_samples"] == len(ranking)
+    nonzero = explanations.groupby("sample_id")["absolute_contribution"].sum() > 0
+    normalized = explanations.groupby("sample_id")[
+        "normalized_contribution"
+    ].sum()
+    assert np.allclose(normalized.loc[nonzero], 1.0)
 
 
 def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None:
@@ -282,6 +325,16 @@ def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None
         range(1, len(dataset.data) + 1)
     )
     assert report.risk_ranking["risk_score"].between(0, 1).all()
+    assert len(report.prediction_explanations) == len(dataset.data) * 8
+    assert report.explanation_summary["total_explained_samples"] == len(
+        dataset.data
+    )
+    assert {
+        "top_risk_feature",
+        "top_risk_contribution",
+        "top_protective_feature",
+        "top_protective_contribution",
+    } <= set(report.risk_ranking.columns)
 
 
 def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
@@ -309,8 +362,14 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     assert captured.err == ""
     ranking = pd.read_csv(destination / "risk_ranking.csv")
     summary = json.loads((destination / "risk_summary.json").read_text())
+    explanations = pd.read_csv(destination / "prediction_explanations.csv")
+    explanation_summary = json.loads(
+        (destination / "explanation_summary.json").read_text()
+    )
     assert len(ranking) == 96
     assert summary["total_samples"] == 96
     assert summary["model_metadata"]["evaluation_mode"] == (
         "cross_project_held_out_folds"
     )
+    assert len(explanations) == len(ranking) * 8
+    assert explanation_summary["total_explained_samples"] == len(ranking)

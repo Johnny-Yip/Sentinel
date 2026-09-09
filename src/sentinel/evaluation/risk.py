@@ -31,6 +31,10 @@ RISK_RANKING_COLUMNS = (
     "evaluation_mode",
     "score_method",
     "decision_threshold",
+    "top_risk_feature",
+    "top_risk_contribution",
+    "top_protective_feature",
+    "top_protective_contribution",
 )
 
 
@@ -125,6 +129,10 @@ def build_risk_ranking(
         kind="stable",
     ).reset_index(drop=True)
     ranking.insert(0, "rank", np.arange(1, len(ranking) + 1))
+    ranking["top_risk_feature"] = pd.NA
+    ranking["top_risk_contribution"] = np.nan
+    ranking["top_protective_feature"] = pd.NA
+    ranking["top_protective_contribution"] = np.nan
     return ranking.loc[:, RISK_RANKING_COLUMNS]
 
 
