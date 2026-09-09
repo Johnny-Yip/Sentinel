@@ -24,6 +24,7 @@ from sentinel.ml.evaluation import (
     DEFAULT_THRESHOLD,
     calculate_metrics,
     extract_feature_importance,
+    positive_class_scores,
     select_f1_threshold,
 )
 from sentinel.ml.models import DEFAULT_RANDOM_STATE, MODEL_ORDER, build_model_pipelines
@@ -40,6 +41,8 @@ class ModelResult:
     name: str
     pipeline: Pipeline
     selected_threshold: float
+    score_method: str
+    test_scores: np.ndarray
     validation_default: dict[str, Any]
     validation_selected: dict[str, Any]
     test_default: dict[str, Any]
@@ -60,17 +63,6 @@ class TrainingResult:
     @property
     def best_model(self) -> ModelResult:
         return self.models[self.best_model_name]
-
-
-def _positive_probabilities(pipeline: Pipeline, features: pd.DataFrame) -> np.ndarray:
-    probabilities = pipeline.predict_proba(features)
-    model = pipeline.named_steps["model"]
-    classes = list(model.classes_)
-    if 1 not in classes:
-        raise InvalidDatasetError(
-            "The training split did not produce a positive-class probability."
-        )
-    return np.asarray(probabilities[:, classes.index(1)], dtype=float)
 
 
 def _feature_importance(
@@ -159,7 +151,12 @@ def train_baselines(
             progress(f"Training {name}...")
         pipeline = pipelines[name]
         pipeline.fit(train_features, train_target)
-        validation_scores = _positive_probabilities(pipeline, validation_features)
+        try:
+            validation_scores, score_method = positive_class_scores(
+                pipeline, validation_features
+            )
+        except ValueError as exc:
+            raise InvalidDatasetError(str(exc)) from exc
         selected_threshold = select_f1_threshold(
             validation_target, validation_scores
         )
@@ -167,6 +164,8 @@ def train_baselines(
             name=name,
             pipeline=pipeline,
             selected_threshold=selected_threshold,
+            score_method=score_method,
+            test_scores=np.array([], dtype=float),
             validation_default=calculate_metrics(
                 validation_target, validation_scores, DEFAULT_THRESHOLD
             ),
@@ -190,7 +189,14 @@ def train_baselines(
     test_target = splits.test[TARGET_COLUMN].to_numpy()
     for name in MODEL_ORDER:
         model_result = validation_results[name]
-        test_scores = _positive_probabilities(model_result.pipeline, test_features)
+        try:
+            test_scores, score_method = positive_class_scores(
+                model_result.pipeline, test_features
+            )
+        except ValueError as exc:
+            raise InvalidDatasetError(str(exc)) from exc
+        model_result.score_method = score_method
+        model_result.test_scores = test_scores
         model_result.test_default = calculate_metrics(
             test_target, test_scores, DEFAULT_THRESHOLD
         )

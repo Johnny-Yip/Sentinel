@@ -244,7 +244,7 @@ def test_artifacts_include_pipeline_and_required_metadata(
     assert pipeline.predict_proba(
         trained_result.splits.test[MODEL_FEATURE_COLUMNS].iloc[:2]
     ).shape == (2, 2)
-    assert metadata["sentinel_version"] == "0.5.0"
+    assert metadata["sentinel_version"] == "0.6.0"
     assert metadata["model_type"] == trained_result.best_model_name
     assert metadata["feature_columns"] == MODEL_FEATURE_COLUMNS
     assert metadata["selected_threshold"] == pytest.approx(

@@ -1,11 +1,11 @@
 # Sentinel
 
 Sentinel is a machine-learning software engineering project intended to predict
-which Java source files are most likely to be involved in future defects. V5
-adds unified evaluation, explainability, and experiment reports to the V1
-repository miner, V2 leakage-safe feature pipeline, V3 reproducible sklearn
-baselines, and V4 cross-project evaluation. It does not expose an application
-service or UI.
+which Java source files are most likely to be involved in future defects. V6
+adds snapshot-level defect-risk scoring and ranking to V5's unified evaluation,
+explainability, and experiment reports. It builds on the V1 repository miner,
+V2 leakage-safe feature pipeline, V3 reproducible sklearn baselines, and V4
+cross-project evaluation. It does not expose an application service or UI.
 
 ## Pipeline
 
@@ -29,6 +29,9 @@ leave-one-project-out V4 report + artifacts
         |
         v
 unified V5 evaluation report
+        |
+        v
+ranked V6 file/snapshot risk report
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -459,9 +462,57 @@ evaluation, it pools the final confusion matrices from the model selected in
 each held-out fold. `report.md` summarizes the dataset, comparison, top feature
 signals, and key findings.
 
+## V6 Phase 1: defect-risk scoring and ranking
+
+V6 adds a `risk_score` for every snapshot that is part of final evaluation:
+the temporal test split in within-project mode and each repository's held-out
+fold in cross-project mode. The score is the selected model's positive-class
+probability when `predict_proba` is available. For compatible estimators that
+only expose `decision_function`, Sentinel deterministically maps the signed
+margin through a sigmoid. All scores are therefore bounded in `[0, 1]`; the
+fallback is useful for ordering but is not a calibrated probability.
+
+Samples are sorted from highest to lowest risk. Equal scores use project, file
+path, snapshot date, model name, and original row order as deterministic
+tie-breakers. `predicted_label` uses the model's validation-selected decision
+threshold. The separate risk threshold controls only the high-risk count and
+top list in the summary; it does not change predictions or model metrics.
+
+Both existing `sentinel-evaluate` modes create two additional files alongside
+all five V5 artifacts:
+
+- `risk_ranking.csv` contains rank, risk score, predicted and true labels,
+  project, file path, snapshot date, selected model, scoring method, evaluation
+  mode, and decision threshold.
+- `risk_summary.json` contains the evaluated and high-risk sample counts, mean
+  and maximum scores, the configured cutoff, top high-risk samples, and
+  model/mode metadata.
+
+The defaults are the top 10 rows at a high-risk cutoff of `0.5`. They can be
+changed for either mode:
+
+```bash
+sentinel-evaluate within-project data/commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --top-risk 25 \
+  --risk-threshold 0.7
+
+sentinel-evaluate cross-project \
+  data/commons-lang_features.csv \
+  data/commons-io_features.csv \
+  data/commons-collections_features.csv \
+  --output-dir reports/cross-project \
+  --top-risk 50 \
+  --risk-threshold 0.65
+```
+
+In cross-project reports, independently selected fold models may have different
+decision thresholds. The CSV records the model and threshold used for each row
+so that the pooled ranking remains auditable.
+
 ## Tests
 
-Run the full V1 through V5 test suite:
+Run the full V1 through V6 test suite:
 
 ```bash
 pytest

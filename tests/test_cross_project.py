@@ -368,7 +368,7 @@ def test_all_cross_project_artifacts_are_created(
     }
     assert all(path.exists() for path in paths.values())
     report = json.loads(paths["report_json"].read_text(encoding="utf-8"))
-    assert report["sentinel_version"] == "0.5.0"
+    assert report["sentinel_version"] == "0.6.0"
     assert report["leakage_audit"]["status"] == "passed"
     assert len(pd.read_csv(paths["folds"])) == 3 * 3 * 2
     assert len(pd.read_csv(paths["aggregate"])) == 3

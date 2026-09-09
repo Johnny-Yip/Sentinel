@@ -1,4 +1,4 @@
-"""Command-line interface for unified Sentinel V5 evaluation reports."""
+"""Command-line interface for unified Sentinel evaluation reports."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from sentinel.evaluation.experiment import (
     evaluate_within_project,
 )
 from sentinel.evaluation.reporting import save_evaluation_report
+from sentinel.evaluation.risk import DEFAULT_RISK_THRESHOLD, DEFAULT_TOP_RISK
 from sentinel.ml.data import MLError, load_dataset
 from sentinel.ml.models import DEFAULT_RANDOM_STATE
 
@@ -26,11 +27,25 @@ def _non_negative_integer(value: str) -> int:
     return parsed
 
 
+def _positive_integer(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def _unit_interval(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("must be between 0 and 1")
+    return parsed
+
+
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        help="Directory for this experiment's five V5 report artifacts",
+        help="Directory for this experiment's unified report artifacts",
     )
     parser.add_argument(
         "--random-state",
@@ -38,11 +53,29 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_RANDOM_STATE,
         help=f"Deterministic model seed (default: {DEFAULT_RANDOM_STATE})",
     )
+    parser.add_argument(
+        "--top-risk",
+        type=_positive_integer,
+        default=DEFAULT_TOP_RISK,
+        help=(
+            "Maximum high-risk rows in risk_summary.json "
+            f"(default: {DEFAULT_TOP_RISK})"
+        ),
+    )
+    parser.add_argument(
+        "--risk-threshold",
+        type=_unit_interval,
+        default=DEFAULT_RISK_THRESHOLD,
+        help=(
+            "Score cutoff for the high-risk summary count "
+            f"(default: {DEFAULT_RISK_THRESHOLD})"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Evaluate Sentinel models and generate a unified V5 report."
+        description="Evaluate Sentinel models and generate a unified V6 report."
     )
     commands = parser.add_subparsers(dest="experiment_type", required=True)
 
@@ -80,7 +113,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Loading and validating {args.feature_csv}...")
             data = load_dataset(args.feature_csv)
             report = evaluate_within_project(
-                data, random_state=args.random_state, progress=print
+                data,
+                random_state=args.random_state,
+                top_risk=args.top_risk,
+                risk_threshold=args.risk_threshold,
+                progress=print,
             )
         else:
             print("Loading and validating cross-project datasets...")
@@ -89,6 +126,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset,
                 random_state=args.random_state,
                 same_project_metadata=args.same_project_metadata,
+                top_risk=args.top_risk,
+                risk_threshold=args.risk_threshold,
                 progress=print,
             )
         paths = save_evaluation_report(report, output_dir)
@@ -102,7 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"\nV5 report directory: {Path(output_dir).expanduser().resolve()}")
+    print(f"\nV6 report directory: {Path(output_dir).expanduser().resolve()}")
     for name, path in paths.items():
         print(f"  {name}: {path}")
     return 0

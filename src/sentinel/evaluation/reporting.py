@@ -1,4 +1,4 @@
-"""Write the normalized Sentinel V5 experiment artifact set."""
+"""Write the normalized Sentinel unified evaluation artifact set."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ REPORT_FILENAMES = {
     "feature_importance": "feature_importance.csv",
     "confusion_matrix": "confusion_matrix.png",
     "summary": "report.md",
+    "risk_ranking": "risk_ranking.csv",
+    "risk_summary": "risk_summary.json",
 }
 
 
@@ -134,7 +136,7 @@ def build_markdown_report(report: EvaluationReport) -> str:
     """Build a concise report from the same normalized data saved to CSV/JSON."""
     dataset = report.dataset_summary
     lines = [
-        "# Sentinel V5 evaluation report",
+        "# Sentinel V6 evaluation report",
         "",
         "## Experiment",
         "",
@@ -160,11 +162,22 @@ def build_markdown_report(report: EvaluationReport) -> str:
         "",
         *(f"- {finding}" for finding in report.key_findings),
         "",
+        "## Risk ranking",
+        "",
+        f"- Evaluated samples: {report.risk_summary['total_samples']:,}",
+        f"- High-risk samples at score >= "
+        f"{_metric(report.risk_summary['risk_threshold'])}: "
+        f"{report.risk_summary['high_risk_sample_count']:,}",
+        f"- Mean risk score: {_metric(report.risk_summary['mean_risk_score'])}",
+        f"- Maximum risk score: {_metric(report.risk_summary['max_risk_score'])}",
+        "",
         "## Artifacts",
         "",
         "Machine-readable metrics and comparisons are in `metrics.json`, "
         "`model_comparison.csv`, and `feature_importance.csv`. The selected "
-        "evaluation confusion matrix is in `confusion_matrix.png`.",
+        "evaluation confusion matrix is in `confusion_matrix.png`. Sample-level "
+        "risk ordering and its summary are in `risk_ranking.csv` and "
+        "`risk_summary.json`.",
         "",
     ]
     return "\n".join(lines)
@@ -214,7 +227,7 @@ def _save_confusion_matrix(
 def save_evaluation_report(
     report: EvaluationReport, output_dir: str | Path
 ) -> dict[str, Path]:
-    """Persist the five-file V5 report contract in one experiment directory."""
+    """Persist the unified report contract in one experiment directory."""
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -236,6 +249,11 @@ def save_evaluation_report(
     )
     report.model_comparison.to_csv(paths["model_comparison"], index=False)
     report.feature_importance.to_csv(paths["feature_importance"], index=False)
+    report.risk_ranking.to_csv(paths["risk_ranking"], index=False)
+    paths["risk_summary"].write_text(
+        json.dumps(_json_safe(report.risk_summary), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     _save_confusion_matrix(
         report.confusion_matrix,
         report.confusion_matrix_label,

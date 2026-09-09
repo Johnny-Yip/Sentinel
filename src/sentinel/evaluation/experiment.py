@@ -12,6 +12,12 @@ import pandas as pd
 from sentinel import __version__
 from sentinel.cross_project.data import MultiRepositoryDataset
 from sentinel.cross_project.experiment import run_cross_project_evaluation
+from sentinel.evaluation.risk import (
+    DEFAULT_RISK_THRESHOLD,
+    DEFAULT_TOP_RISK,
+    build_risk_ranking,
+    build_risk_summary,
+)
 from sentinel.ml.data import (
     DATE_COLUMN,
     PATH_COLUMN,
@@ -25,7 +31,7 @@ from sentinel.ml.training import ProgressCallback, TrainingResult, train_baselin
 
 @dataclass
 class EvaluationReport:
-    """Normalized artifacts for one Sentinel V5 evaluation experiment."""
+    """Normalized artifacts for one Sentinel unified evaluation experiment."""
 
     experiment_type: str
     dataset_summary: dict[str, Any]
@@ -37,6 +43,8 @@ class EvaluationReport:
     confusion_matrix: np.ndarray
     confusion_matrix_label: str
     key_findings: tuple[str, ...]
+    risk_ranking: pd.DataFrame
+    risk_summary: dict[str, Any]
 
 
 def _date_range(data: pd.DataFrame) -> dict[str, str]:
@@ -137,6 +145,8 @@ def evaluate_within_project(
     data: pd.DataFrame,
     *,
     random_state: int = DEFAULT_RANDOM_STATE,
+    top_risk: int = DEFAULT_TOP_RISK,
+    risk_threshold: float = DEFAULT_RISK_THRESHOLD,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
     """Run V3 temporal evaluation and normalize it to the V5 report contract."""
@@ -167,6 +177,21 @@ def evaluate_within_project(
         ),
         f"Its highest-ranked explanatory feature was {top_feature}.",
     )
+    risk_ranking = build_risk_ranking(
+        result.splits.test,
+        best.test_scores,
+        model=result.best_model_name,
+        evaluation_mode="within_project_temporal_test",
+        score_method=best.score_method,
+        decision_threshold=best.selected_threshold,
+    )
+    risk_summary = build_risk_summary(
+        risk_ranking,
+        top_risk=top_risk,
+        risk_threshold=risk_threshold,
+        selected_model=result.best_model_name,
+        evaluation_mode="within_project_temporal_test",
+    )
     return EvaluationReport(
         experiment_type="within_project",
         dataset_summary=_within_dataset_summary(result),
@@ -180,6 +205,8 @@ def evaluate_within_project(
         ),
         confusion_matrix_label=f"{result.best_model_name} on temporal test split",
         key_findings=findings,
+        risk_ranking=risk_ranking,
+        risk_summary=risk_summary,
     )
 
 
@@ -246,6 +273,8 @@ def evaluate_cross_project(
     *,
     random_state: int = DEFAULT_RANDOM_STATE,
     same_project_metadata: str | Path | None = None,
+    top_risk: int = DEFAULT_TOP_RISK,
+    risk_threshold: float = DEFAULT_RISK_THRESHOLD,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
     """Run V4 leave-one-project-out evaluation under the V5 report contract."""
@@ -254,7 +283,7 @@ def evaluate_cross_project(
         random_state=random_state,
         same_project_metadata=same_project_metadata,
         progress=progress,
-        retain_models=False,
+        retain_models=True,
     )
     comparison = result.aggregate.copy()
     selected = result.folds.loc[
@@ -305,6 +334,39 @@ def evaluate_cross_project(
         "model_selection": result.model_selection,
         "leakage_audit": result.report["leakage_audit"],
     }
+    risk_samples: list[pd.DataFrame] = []
+    risk_scores: list[np.ndarray] = []
+    risk_models: list[str] = []
+    risk_methods: list[str] = []
+    risk_thresholds: list[float] = []
+    for fold_evaluation in result.fold_evaluations:
+        training_result = fold_evaluation.training_result
+        # Defensive guard for the retained-model contract.
+        if training_result is None:
+            raise ValueError("Cross-project risk scoring requires retained models.")
+        model = training_result.best_model
+        row_count = len(fold_evaluation.fold.test)
+        risk_samples.append(fold_evaluation.fold.test)
+        risk_scores.append(model.test_scores)
+        risk_models.extend([training_result.best_model_name] * row_count)
+        risk_methods.extend([model.score_method] * row_count)
+        risk_thresholds.extend([model.selected_threshold] * row_count)
+    combined_samples = pd.concat(risk_samples, ignore_index=True)
+    risk_ranking = build_risk_ranking(
+        combined_samples,
+        np.concatenate(risk_scores),
+        model=risk_models,
+        evaluation_mode="cross_project_held_out_folds",
+        score_method=risk_methods,
+        decision_threshold=risk_thresholds,
+    )
+    risk_summary = build_risk_summary(
+        risk_ranking,
+        top_risk=top_risk,
+        risk_threshold=risk_threshold,
+        selected_model="per_fold_validation_selection",
+        evaluation_mode="cross_project_held_out_folds",
+    )
     return EvaluationReport(
         experiment_type="cross_project",
         dataset_summary=_cross_dataset_summary(dataset),
@@ -316,4 +378,6 @@ def evaluate_cross_project(
         confusion_matrix=matrix,
         confusion_matrix_label="pooled per-fold selected models",
         key_findings=findings,
+        risk_ranking=risk_ranking,
+        risk_summary=risk_summary,
     )

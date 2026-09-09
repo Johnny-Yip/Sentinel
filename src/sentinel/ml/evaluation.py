@@ -22,6 +22,71 @@ from sklearn.metrics import (
 DEFAULT_THRESHOLD = 0.5
 
 
+def positive_class_scores(
+    classifier: Any, features: Any
+) -> tuple[np.ndarray, str]:
+    """Return normalized positive-class scores and the scoring method used.
+
+    Probability estimates are preferred. Estimators that expose only a
+    decision function use a deterministic sigmoid mapping, which preserves
+    margin order while bounding every score to ``[0, 1]``. The fallback is a
+    ranking score rather than a calibrated probability.
+    """
+    classes = np.asarray(getattr(classifier, "classes_", []))
+    if classes.size == 0:
+        estimator = getattr(classifier, "named_steps", {}).get("model")
+        classes = np.asarray(getattr(estimator, "classes_", []))
+    positive_indices = np.flatnonzero(classes == 1)
+    if positive_indices.size != 1:
+        raise ValueError("The fitted classifier must expose positive class 1.")
+    positive_index = int(positive_indices[0])
+
+    predict_probability = getattr(classifier, "predict_proba", None)
+    decision_function = getattr(classifier, "decision_function", None)
+    if callable(predict_probability):
+        probabilities = np.asarray(predict_probability(features), dtype=float)
+        if probabilities.ndim != 2 or probabilities.shape[1] != len(classes):
+            raise ValueError(
+                "predict_proba output must align with the classifier classes."
+            )
+        scores = probabilities[:, positive_index]
+        method = "predict_proba"
+    elif callable(decision_function):
+        margins = np.asarray(decision_function(features), dtype=float)
+        if margins.ndim == 1:
+            if len(classes) != 2:
+                raise ValueError(
+                    "One-dimensional decision scores require a binary classifier."
+                )
+            # sklearn's binary margin is oriented toward classes_[1].
+            oriented = margins if positive_index == 1 else -margins
+        elif margins.ndim == 2 and margins.shape[1] == len(classes):
+            oriented = margins[:, positive_index]
+        else:
+            raise ValueError(
+                "decision_function output must align with the classifier classes."
+            )
+        if not np.isfinite(oriented).all():
+            raise ValueError("Decision scores must be finite.")
+        scores = np.empty(oriented.shape, dtype=float)
+        non_negative = oriented >= 0
+        scores[non_negative] = 1.0 / (1.0 + np.exp(-oriented[non_negative]))
+        exponent = np.exp(oriented[~non_negative])
+        scores[~non_negative] = exponent / (1.0 + exponent)
+        method = "decision_function_sigmoid"
+    else:
+        raise ValueError(
+            "The fitted classifier must expose predict_proba or decision_function."
+        )
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 1 or len(scores) != len(features):
+        raise ValueError("Risk scores must contain one value per evaluated sample.")
+    if not np.isfinite(scores).all():
+        raise ValueError("Risk scores must be finite.")
+    return np.clip(scores, 0.0, 1.0), method
+
+
 def calculate_metrics(
     y_true: np.ndarray,
     positive_scores: np.ndarray,
