@@ -35,6 +35,9 @@ RISK_RANKING_COLUMNS = (
     "top_risk_contribution",
     "top_protective_feature",
     "top_protective_contribution",
+    "primary_risk_reason",
+    "recommended_action",
+    "risk_signal_count",
 )
 
 
@@ -133,6 +136,9 @@ def build_risk_ranking(
     ranking["top_risk_contribution"] = np.nan
     ranking["top_protective_feature"] = pd.NA
     ranking["top_protective_contribution"] = np.nan
+    ranking["primary_risk_reason"] = pd.NA
+    ranking["recommended_action"] = pd.NA
+    ranking["risk_signal_count"] = 0
     return ranking.loc[:, RISK_RANKING_COLUMNS]
 
 

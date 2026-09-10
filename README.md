@@ -2,8 +2,9 @@
 
 Sentinel is a machine-learning software engineering project intended to predict
 which Java source files are most likely to be involved in future defects. V6
-adds snapshot-level defect-risk scoring, ranking, and individual prediction
-explanations to V5's unified evaluation and experiment reports. It builds on
+adds snapshot-level defect-risk scoring, individual prediction explanations,
+and actionable developer inspection guidance to V5's unified evaluation and
+experiment reports. It builds on
 the V1 repository miner, V2 leakage-safe feature pipeline, V3 reproducible
 sklearn baselines, and V4 cross-project evaluation. It does not expose an
 application service or UI.
@@ -32,7 +33,7 @@ leave-one-project-out V4 report + artifacts
 unified V5 evaluation report
         |
         v
-ranked and locally explained V6 file/snapshot risk report
+ranked, explained, and actionable V6 file/snapshot risk report
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -564,6 +565,66 @@ sentinel-evaluate cross-project \
   data/commons-collections_features.csv \
   --output-dir reports/cross-project \
   --explain-top-k 5
+```
+
+## V6 Phase 3: Actionable Risk Insights
+
+Phase 3 translates Phase 2's local contributions into concise, developer-facing
+inspection guidance. It does not calculate model explanations again. Each of the
+eight supported historical features has a stable category, human-readable
+interpretation, and practical recommendation. Positive contributions are risk
+signals and negative contributions are protective signals; this describes the
+fitted model's local behavior, not a claim that a larger raw feature value is
+always harmful or helpful.
+
+For every evaluated snapshot, Sentinel selects up to three strongest non-neutral
+supported contributions using absolute magnitude and feature name as a stable
+tie-breaker. Insight generation always uses the full explanation set, so
+`--explain-top-k` limits only `prediction_explanations.csv` and cannot change the
+ranking guidance. Unknown future features are skipped rather than assigned
+guessed advice and are listed in artifact metadata.
+
+`risk_ranking.csv` now includes three concise fields:
+
+- `primary_risk_reason`: interpretation of the strongest risk-increasing signal,
+  or an explicit fallback when no such signal exists;
+- `recommended_action`: the corresponding developer inspection prompt; and
+- `risk_signal_count`: number of supported positive contributions for the
+  sample.
+
+Both within-project and cross-project evaluations also write
+`actionable_insights.json`. It contains the per-sample selected risk and
+protective signals, aggregate counts, common signal categories, feature
+definitions, and deterministic-method metadata. A shortened sample looks like:
+
+```json
+{
+  "schema_version": 1,
+  "total_samples": 24,
+  "common_risk_signals": [
+    {
+      "feature": "code_churn",
+      "category": "high_churn",
+      "sample_count": 11
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "owner/project|src/Parser.java|2024-01-31",
+      "primary_risk_reason": "Overall code churn is pushing predicted risk upward.",
+      "recommended_action": "Inspect churn hotspots for repeated rewrites, broad diffs, and weak regression coverage.",
+      "risk_signal_count": 3,
+      "protective_signal_count": 2,
+      "insights": [
+        {
+          "feature": "code_churn",
+          "category": "high_churn",
+          "signal_type": "risk"
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ## Tests

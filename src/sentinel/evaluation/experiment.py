@@ -20,6 +20,10 @@ from sentinel.evaluation.explain import (
     limit_explanations,
     sort_explanations,
 )
+from sentinel.evaluation.insights import (
+    add_actionable_insights_to_ranking,
+    build_actionable_insights,
+)
 from sentinel.evaluation.risk import (
     DEFAULT_RISK_THRESHOLD,
     DEFAULT_TOP_RISK,
@@ -57,6 +61,7 @@ class EvaluationReport:
         default_factory=lambda: pd.DataFrame(columns=EXPLANATION_COLUMNS)
     )
     explanation_summary: dict[str, Any] = field(default_factory=dict)
+    actionable_insights: dict[str, Any] = field(default_factory=dict)
 
 
 def _date_range(data: pd.DataFrame) -> dict[str, str]:
@@ -217,6 +222,10 @@ def evaluate_within_project(
     explanation_summary = build_explanation_summary(
         prediction_explanations, explain_top_k=explain_top_k
     )
+    actionable_insights = build_actionable_insights(full_explanations)
+    risk_ranking = add_actionable_insights_to_ranking(
+        risk_ranking, actionable_insights
+    )
     risk_summary = build_risk_summary(
         risk_ranking,
         top_risk=top_risk,
@@ -241,6 +250,7 @@ def evaluate_within_project(
         risk_summary=risk_summary,
         prediction_explanations=prediction_explanations,
         explanation_summary=explanation_summary,
+        actionable_insights=actionable_insights,
     )
 
 
@@ -418,6 +428,10 @@ def evaluate_cross_project(
     explanation_summary = build_explanation_summary(
         prediction_explanations, explain_top_k=explain_top_k
     )
+    actionable_insights = build_actionable_insights(full_explanations)
+    risk_ranking = add_actionable_insights_to_ranking(
+        risk_ranking, actionable_insights
+    )
     risk_summary = build_risk_summary(
         risk_ranking,
         top_risk=top_risk,
@@ -440,4 +454,5 @@ def evaluate_cross_project(
         risk_summary=risk_summary,
         prediction_explanations=prediction_explanations,
         explanation_summary=explanation_summary,
+        actionable_insights=actionable_insights,
     )

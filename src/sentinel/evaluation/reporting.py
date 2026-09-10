@@ -12,6 +12,7 @@ import pandas as pd
 
 from sentinel.evaluation.explain import build_explanation_summary
 from sentinel.evaluation.experiment import EvaluationReport
+from sentinel.evaluation.insights import build_actionable_insights
 
 
 REPORT_FILENAMES = {
@@ -24,6 +25,7 @@ REPORT_FILENAMES = {
     "risk_summary": "risk_summary.json",
     "prediction_explanations": "prediction_explanations.csv",
     "explanation_summary": "explanation_summary.json",
+    "actionable_insights": "actionable_insights.json",
 }
 
 
@@ -141,6 +143,9 @@ def build_markdown_report(report: EvaluationReport) -> str:
     explanation_summary = report.explanation_summary or build_explanation_summary(
         report.prediction_explanations
     )
+    actionable_insights = report.actionable_insights or build_actionable_insights(
+        report.prediction_explanations
+    )
     lines = [
         "# Sentinel V6 evaluation report",
         "",
@@ -186,6 +191,15 @@ def build_markdown_report(report: EvaluationReport) -> str:
         "- Positive contributions increase predicted defect risk; negative "
         "contributions decrease it.",
         "",
+        "## Actionable risk insights",
+        "",
+        f"- Samples with risk signals: "
+        f"{actionable_insights['samples_with_risk_signals']:,}",
+        f"- Samples with protective signals: "
+        f"{actionable_insights['samples_with_protective_signals']:,}",
+        "- Recommendations translate the strongest local contributions into "
+        "developer inspection prompts.",
+        "",
         "## Artifacts",
         "",
         "Machine-readable metrics and comparisons are in `metrics.json`, "
@@ -194,7 +208,8 @@ def build_markdown_report(report: EvaluationReport) -> str:
         "risk ordering and its summary are in `risk_ranking.csv` and "
         "`risk_summary.json`. Local feature-level contributions and their "
         "aggregate summary are in `prediction_explanations.csv` and "
-        "`explanation_summary.json`.",
+        "`explanation_summary.json`. Developer-facing per-sample guidance and "
+        "common signals are in `actionable_insights.json`.",
         "",
     ]
     return "\n".join(lines)
@@ -279,6 +294,14 @@ def save_evaluation_report(
     )
     paths["explanation_summary"].write_text(
         json.dumps(_json_safe(explanation_summary), indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    actionable_insights = report.actionable_insights or build_actionable_insights(
+        report.prediction_explanations
+    )
+    paths["actionable_insights"].write_text(
+        json.dumps(_json_safe(actionable_insights), indent=2, sort_keys=True)
         + "\n",
         encoding="utf-8",
     )

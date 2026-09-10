@@ -18,6 +18,12 @@ from sentinel.evaluation.experiment import (
     EvaluationReport,
     evaluate_cross_project,
 )
+from sentinel.evaluation.insights import (
+    ACTIONABLE_INSIGHTS_SCHEMA_VERSION,
+    RANKING_INSIGHT_COLUMNS,
+    add_actionable_insights_to_ranking,
+    build_actionable_insights,
+)
 from sentinel.evaluation.reporting import REPORT_FILENAMES, save_evaluation_report
 from sentinel.evaluation.risk import (
     RISK_RANKING_COLUMNS,
@@ -31,7 +37,8 @@ class ProbabilityClassifier:
     classes_ = np.array([0, 1])
 
     def predict_proba(self, features):
-        positive = np.asarray(features["score"], dtype=float)
+        column = "score" if "score" in features else features.columns[0]
+        positive = np.asarray(features[column], dtype=float)
         return np.column_stack([1.0 - positive, positive])
 
     def decision_function(self, features):  # pragma: no cover - must not be used
@@ -81,6 +88,7 @@ def sample_report() -> EvaluationReport:
             "snapshot_date": pd.date_range("2021-01-31", periods=4, freq="ME"),
             "defect_next_90_days": [0, 1, 0, 1],
             "score": scores,
+            "commit_count": scores,
         }
     )
     risk_ranking = build_risk_ranking(
@@ -94,7 +102,7 @@ def sample_report() -> EvaluationReport:
     prediction_explanations = explain_predictions(
         ProbabilityClassifier(),
         samples,
-        ["score"],
+        ["commit_count"],
         scores,
         model="example",
         evaluation_mode="within_project_temporal_test",
@@ -102,6 +110,10 @@ def sample_report() -> EvaluationReport:
     )
     risk_ranking = add_top_explanations_to_ranking(
         risk_ranking, prediction_explanations
+    )
+    actionable_insights = build_actionable_insights(prediction_explanations)
+    risk_ranking = add_actionable_insights_to_ranking(
+        risk_ranking, actionable_insights
     )
     return EvaluationReport(
         experiment_type="within_project",
@@ -161,6 +173,7 @@ def sample_report() -> EvaluationReport:
         ),
         prediction_explanations=prediction_explanations,
         explanation_summary=build_explanation_summary(prediction_explanations),
+        actionable_insights=actionable_insights,
     )
 
 
@@ -242,10 +255,17 @@ def test_report_generation_writes_v5_artifacts_plus_v6_risk_outputs(
     )
     assert explanation_summary["total_explained_samples"] == 4
     assert explanation_summary["total_explained_feature_contributions"] == 4
+    actionable = json.loads(
+        paths["actionable_insights"].read_text(encoding="utf-8")
+    )
+    assert actionable["schema_version"] == ACTIONABLE_INSIGHTS_SCHEMA_VERSION
+    assert actionable["total_samples"] == 4
+    assert actionable["feature_definitions"]
     assert paths["confusion_matrix"].read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     markdown = paths["summary"].read_text(encoding="utf-8")
     assert "# Sentinel V6 evaluation report" in markdown
     assert "## Key findings" in markdown
+    assert "## Actionable risk insights" in markdown
 
 
 def test_within_project_cli_creates_complete_report(
@@ -289,8 +309,16 @@ def test_within_project_cli_creates_complete_report(
     explanation_summary = json.loads(
         (destination / "explanation_summary.json").read_text()
     )
+    actionable = json.loads(
+        (destination / "actionable_insights.json").read_text()
+    )
     assert len(explanations) == len(ranking) * 3
     assert explanation_summary["total_explained_samples"] == len(ranking)
+    assert actionable["total_samples"] == len(ranking)
+    assert all(len(sample["insights"]) <= 3 for sample in actionable["samples"])
+    assert all(column in ranking for column in RANKING_INSIGHT_COLUMNS)
+    assert ranking["primary_risk_reason"].notna().all()
+    assert ranking["recommended_action"].notna().all()
     nonzero = explanations.groupby("sample_id")["absolute_contribution"].sum() > 0
     normalized = explanations.groupby("sample_id")[
         "normalized_contribution"
@@ -329,6 +357,7 @@ def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None
     assert report.explanation_summary["total_explained_samples"] == len(
         dataset.data
     )
+    assert report.actionable_insights["total_samples"] == len(dataset.data)
     assert {
         "top_risk_feature",
         "top_risk_contribution",
@@ -366,6 +395,9 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     explanation_summary = json.loads(
         (destination / "explanation_summary.json").read_text()
     )
+    actionable = json.loads(
+        (destination / "actionable_insights.json").read_text()
+    )
     assert len(ranking) == 96
     assert summary["total_samples"] == 96
     assert summary["model_metadata"]["evaluation_mode"] == (
@@ -373,3 +405,5 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     )
     assert len(explanations) == len(ranking) * 8
     assert explanation_summary["total_explained_samples"] == len(ranking)
+    assert actionable["total_samples"] == len(ranking)
+    assert all(column in ranking for column in RANKING_INSIGHT_COLUMNS)
