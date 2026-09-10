@@ -25,6 +25,10 @@ from sentinel.evaluation.insights import (
     build_actionable_insights,
 )
 from sentinel.evaluation.reporting import REPORT_FILENAMES, save_evaluation_report
+from sentinel.evaluation.project_intelligence import (
+    DEVELOPER_PRIORITY_COLUMNS,
+    PROJECT_INTELLIGENCE_SCHEMA_VERSION,
+)
 from sentinel.evaluation.risk import (
     RISK_RANKING_COLUMNS,
     build_risk_ranking,
@@ -261,11 +265,21 @@ def test_report_generation_writes_v5_artifacts_plus_v6_risk_outputs(
     assert actionable["schema_version"] == ACTIONABLE_INSIGHTS_SCHEMA_VERSION
     assert actionable["total_samples"] == 4
     assert actionable["feature_definitions"]
+    intelligence = json.loads(
+        paths["project_intelligence"].read_text(encoding="utf-8")
+    )
+    priority = pd.read_csv(paths["developer_priority"])
+    assert intelligence["schema_version"] == PROJECT_INTELLIGENCE_SCHEMA_VERSION
+    assert intelligence["summary"]["total_evaluated_samples"] == 4
+    assert intelligence["summary"]["risk_threshold"] == 0.5
+    assert list(priority.columns) == list(DEVELOPER_PRIORITY_COLUMNS)
+    assert len(priority) == 4
     assert paths["confusion_matrix"].read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     markdown = paths["summary"].read_text(encoding="utf-8")
     assert "# Sentinel V6 evaluation report" in markdown
     assert "## Key findings" in markdown
     assert "## Actionable risk insights" in markdown
+    assert "## Project Risk Intelligence" in markdown
 
 
 def test_within_project_cli_creates_complete_report(
@@ -315,6 +329,13 @@ def test_within_project_cli_creates_complete_report(
     assert len(explanations) == len(ranking) * 3
     assert explanation_summary["total_explained_samples"] == len(ranking)
     assert actionable["total_samples"] == len(ranking)
+    intelligence = json.loads(
+        (destination / "project_intelligence.json").read_text()
+    )
+    priority = pd.read_csv(destination / "developer_priority.csv")
+    assert intelligence["summary"]["total_evaluated_samples"] == len(ranking)
+    assert intelligence["metadata"]["threshold_semantics"]["risk_threshold"] == 0.8
+    assert len(priority) == len(ranking)
     assert all(len(sample["insights"]) <= 3 for sample in actionable["samples"])
     assert all(column in ranking for column in RANKING_INSIGHT_COLUMNS)
     assert ranking["primary_risk_reason"].notna().all()
@@ -358,6 +379,11 @@ def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None
         dataset.data
     )
     assert report.actionable_insights["total_samples"] == len(dataset.data)
+    assert report.project_intelligence["summary"]["analysis_scope"] == (
+        "per_project"
+    )
+    assert len(report.project_intelligence["projects"]) == 2
+    assert report.developer_priority.groupby("project")["rank"].min().eq(1).all()
     assert {
         "top_risk_feature",
         "top_risk_contribution",
@@ -398,6 +424,10 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     actionable = json.loads(
         (destination / "actionable_insights.json").read_text()
     )
+    intelligence = json.loads(
+        (destination / "project_intelligence.json").read_text()
+    )
+    priority = pd.read_csv(destination / "developer_priority.csv")
     assert len(ranking) == 96
     assert summary["total_samples"] == 96
     assert summary["model_metadata"]["evaluation_mode"] == (
@@ -407,3 +437,9 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     assert explanation_summary["total_explained_samples"] == len(ranking)
     assert actionable["total_samples"] == len(ranking)
     assert all(column in ranking for column in RANKING_INSIGHT_COLUMNS)
+    assert intelligence["summary"]["analysis_scope"] == "per_project"
+    assert {project["project"] for project in intelligence["projects"]} == {
+        "owner/alpha",
+        "owner/beta",
+    }
+    assert priority.groupby("project")["rank"].min().eq(1).all()

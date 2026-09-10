@@ -24,6 +24,10 @@ from sentinel.evaluation.insights import (
     add_actionable_insights_to_ranking,
     build_actionable_insights,
 )
+from sentinel.evaluation.project_intelligence import (
+    DEVELOPER_PRIORITY_COLUMNS,
+    build_project_intelligence,
+)
 from sentinel.evaluation.risk import (
     DEFAULT_RISK_THRESHOLD,
     DEFAULT_TOP_RISK,
@@ -62,6 +66,10 @@ class EvaluationReport:
     )
     explanation_summary: dict[str, Any] = field(default_factory=dict)
     actionable_insights: dict[str, Any] = field(default_factory=dict)
+    project_intelligence: dict[str, Any] = field(default_factory=dict)
+    developer_priority: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=DEVELOPER_PRIORITY_COLUMNS)
+    )
 
 
 def _date_range(data: pd.DataFrame) -> dict[str, str]:
@@ -233,6 +241,13 @@ def evaluate_within_project(
         selected_model=result.best_model_name,
         evaluation_mode="within_project_temporal_test",
     )
+    project_intelligence = build_project_intelligence(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="within_project",
+    )
     return EvaluationReport(
         experiment_type="within_project",
         dataset_summary=_within_dataset_summary(result),
@@ -251,6 +266,8 @@ def evaluate_within_project(
         prediction_explanations=prediction_explanations,
         explanation_summary=explanation_summary,
         actionable_insights=actionable_insights,
+        project_intelligence=project_intelligence.artifact,
+        developer_priority=project_intelligence.developer_priority,
     )
 
 
@@ -439,6 +456,13 @@ def evaluate_cross_project(
         selected_model="per_fold_validation_selection",
         evaluation_mode="cross_project_held_out_folds",
     )
+    project_intelligence = build_project_intelligence(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="cross_project",
+    )
     return EvaluationReport(
         experiment_type="cross_project",
         dataset_summary=_cross_dataset_summary(dataset),
@@ -455,4 +479,6 @@ def evaluate_cross_project(
         prediction_explanations=prediction_explanations,
         explanation_summary=explanation_summary,
         actionable_insights=actionable_insights,
+        project_intelligence=project_intelligence.artifact,
+        developer_priority=project_intelligence.developer_priority,
     )

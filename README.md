@@ -3,8 +3,8 @@
 Sentinel is a machine-learning software engineering project intended to predict
 which Java source files are most likely to be involved in future defects. V6
 adds snapshot-level defect-risk scoring, individual prediction explanations,
-and actionable developer inspection guidance to V5's unified evaluation and
-experiment reports. It builds on
+actionable developer inspection guidance, and project-level risk intelligence
+to V5's unified evaluation and experiment reports. It builds on
 the V1 repository miner, V2 leakage-safe feature pipeline, V3 reproducible
 sklearn baselines, and V4 cross-project evaluation. It does not expose an
 application service or UI.
@@ -33,7 +33,7 @@ leave-one-project-out V4 report + artifacts
 unified V5 evaluation report
         |
         v
-ranked, explained, and actionable V6 file/snapshot risk report
+ranked, explained, actionable, and project-level V6 risk intelligence
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -626,6 +626,106 @@ definitions, and deterministic-method metadata. A shortened sample looks like:
   ]
 }
 ```
+
+## V6 Phase 4: Project-Level Risk Intelligence
+
+Phase 4 aggregates the final-evaluation predictions and the already-computed
+Phase 2/3 explanations and insights into deterministic engineering summaries.
+It does not fit another model, recompute attribution, or create a second
+definition of high risk. Every high-risk count uses the same
+`--risk-threshold` cutoff as `risk_summary.json`; this summary cutoff remains
+separate from the validation-selected threshold that produces model labels and
+metrics.
+
+Each V6 evaluation directory now also contains:
+
+- `project_intelligence.json`, a stable schema with project summary statistics,
+  risk concentration, recurring file hotspots, risk/protective signal profiles,
+  descriptive temporal trends, top priorities, and method metadata; and
+- `developer_priority.csv`, the complete deterministic sample inspection queue.
+
+The JSON's principal fields are:
+
+- `summary`: evaluated/high-risk counts, high-risk percentage, mean, median and
+  maximum predicted risk, five fixed risk-score bands, dominant signals, and
+  the number of identifiable risky files;
+- `risk_concentration`: risk share from the top 10% and 20% of samples, the
+  sample count needed to reach 50% of aggregate predicted risk, and
+  concentration in repeatedly high-risk file paths;
+- `hotspots`: file paths with at least two observations at or above the risk
+  cutoff, ordered by repeated high-risk count and stable tie-breakers;
+- `risk_signal_profile`: common and strongest aggregate risk/protective
+  contributions, using the existing Phase 3 feature registry and recording
+  contribution methods/spaces;
+- `temporal_analysis`: calendar-month mean risk, high-risk rate, dominant risk
+  signal, and change from the prior available period; and
+- `metadata`: formulas, tie-breaks, threshold semantics, unsupported analyses,
+  unknown features, identifier/timestamp availability, and limitations.
+
+### Concentration definitions
+
+Sentinel sorts risk scores descending. The top-10% share is the sum of the
+highest `ceil(0.10 * sample_count)` scores divided by the sum of all scores; the
+top-20% share uses `ceil(0.20 * sample_count)`. The 50% count is the smallest
+descending-score prefix whose sum reaches at least half of aggregate predicted
+risk. If aggregate predicted risk is zero, both shares and the 50% count are
+defined as zero. These ceiling rules make one-row and other small datasets
+well-defined.
+
+Repeated-entity concentration uses every observation of any available
+`file_path` with at least two high-risk observations. Sentinel reports those
+observations' share of aggregate predicted risk and their share of identifiable
+high-risk observations. If paths are unavailable, hotspot analysis is marked
+unsupported rather than inventing identifiers.
+
+### Developer priority score
+
+The queue uses this transparent inspection heuristic:
+
+```text
+recurring_hotspot_evidence = high_risk_rate * min(high_risk_count / 2, 1)
+priority_score = 0.80 * predicted_risk + 0.20 * recurring_hotspot_evidence
+```
+
+`high_risk_count` and `high_risk_rate` are calculated over observations of the
+same available file path in the project. The recurrence multiplier reaches its
+maximum at two high-risk observations. Rows are ordered by priority score,
+predicted risk, recurring high-risk count, identifier, snapshot date, and
+source order. In cross-project mode, ranks restart at 1 inside each held-out
+project. A priority score is an inspection heuristic, not a probability.
+
+Run a within-project report exactly as in earlier V6 phases:
+
+```bash
+sentinel-evaluate within-project commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --risk-threshold 0.7
+```
+
+The resulting `project_intelligence.json` has a `single_project` summary and
+`report.md` includes a concise `Project Risk Intelligence` section. For
+cross-project/LOPO evaluation:
+
+```bash
+sentinel-evaluate cross-project \
+  commons-lang_features.csv \
+  commons-io_features.csv \
+  --output-dir reports/commons-cross-project \
+  --risk-threshold 0.7
+```
+
+The cross-project artifact uses `summary.analysis_scope = "per_project"` and a
+`projects` array. Each held-out project has its own summary, concentration,
+hotspots, signal profile, temporal analysis, and priority ranks. Sentinel does
+not pool unrelated held-out projects into a misleading project-level mean or
+concentration statistic.
+
+Project intelligence summarizes fitted-model signals. Risk signals are
+associations, not causal claims; temporal movements are descriptive and do not
+claim statistical significance. Contribution totals should only be compared
+within the same explanation method and contribution space. Sentinel does not
+prove that a file contains a defect, and missing timestamps or identifiers are
+reported explicitly instead of being fabricated.
 
 ## Tests
 

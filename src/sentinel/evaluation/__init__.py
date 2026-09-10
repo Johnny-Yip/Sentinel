@@ -15,6 +15,13 @@ from sentinel.evaluation.insights import (
     add_actionable_insights_to_ranking,
     build_actionable_insights,
 )
+from sentinel.evaluation.project_intelligence import (
+    DEVELOPER_PRIORITY_COLUMNS,
+    PROJECT_INTELLIGENCE_SCHEMA_VERSION,
+    ProjectIntelligenceResult,
+    build_project_intelligence,
+    calculate_risk_concentration,
+)
 from sentinel.evaluation.reporting import save_evaluation_report
 from sentinel.evaluation.risk import (
     build_risk_ranking,
@@ -30,6 +37,11 @@ __all__ = [
     "build_explanation_summary",
     "add_top_explanations_to_ranking",
     "build_actionable_insights",
+    "build_project_intelligence",
+    "calculate_risk_concentration",
+    "DEVELOPER_PRIORITY_COLUMNS",
+    "PROJECT_INTELLIGENCE_SCHEMA_VERSION",
+    "ProjectIntelligenceResult",
     "add_actionable_insights_to_ranking",
     "calculate_metrics",
     "calculate_risk_scores",

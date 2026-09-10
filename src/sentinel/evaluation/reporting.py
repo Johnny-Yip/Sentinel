@@ -13,6 +13,11 @@ import pandas as pd
 from sentinel.evaluation.explain import build_explanation_summary
 from sentinel.evaluation.experiment import EvaluationReport
 from sentinel.evaluation.insights import build_actionable_insights
+from sentinel.evaluation.project_intelligence import (
+    DEVELOPER_PRIORITY_COLUMNS,
+    ProjectIntelligenceResult,
+    build_project_intelligence,
+)
 
 
 REPORT_FILENAMES = {
@@ -26,6 +31,8 @@ REPORT_FILENAMES = {
     "prediction_explanations": "prediction_explanations.csv",
     "explanation_summary": "explanation_summary.json",
     "actionable_insights": "actionable_insights.json",
+    "project_intelligence": "project_intelligence.json",
+    "developer_priority": "developer_priority.csv",
 }
 
 
@@ -49,6 +56,10 @@ def _json_safe(value: Any) -> Any:
 
 def _metric(value: Any) -> str:
     return "N/A" if value is None or pd.isna(value) else f"{float(value):.4f}"
+
+
+def _percentage_metric(value: Any) -> str:
+    return "N/A" if value is None or pd.isna(value) else f"{float(value):.2f}%"
 
 
 def _markdown_table(headers: list[str], rows: list[list[str]]) -> list[str]:
@@ -137,7 +148,134 @@ def _importance_table(frame: pd.DataFrame) -> list[str]:
     )
 
 
-def build_markdown_report(report: EvaluationReport) -> str:
+def _resolved_project_intelligence(
+    report: EvaluationReport,
+) -> ProjectIntelligenceResult:
+    if report.project_intelligence:
+        queue = report.developer_priority.copy()
+        if queue.empty:
+            queue = pd.DataFrame(columns=DEVELOPER_PRIORITY_COLUMNS)
+        return ProjectIntelligenceResult(report.project_intelligence, queue)
+    return build_project_intelligence(
+        report.risk_ranking,
+        report.prediction_explanations,
+        report.actionable_insights,
+        risk_threshold=float(report.risk_summary["risk_threshold"]),
+        experiment_type=report.experiment_type,
+    )
+
+
+def _signal_names(records: list[dict[str, Any]]) -> str:
+    return ", ".join(str(record["feature"]) for record in records[:3]) or "none"
+
+
+def _project_intelligence_lines(
+    intelligence: dict[str, Any], priority: pd.DataFrame
+) -> list[str]:
+    if intelligence["summary"].get("analysis_scope") == "per_project":
+        analyses = intelligence.get("projects", [])
+        lines = [
+            "Cross-project intelligence is kept separate for each held-out project.",
+            "",
+        ]
+        if analyses:
+            lines.extend(
+                _markdown_table(
+                    [
+                        "Project",
+                        "Samples",
+                        "Mean risk",
+                        "High-risk rate",
+                        "Top 10% risk share",
+                        "Dominant signal",
+                        "Temporal direction",
+                    ],
+                    [
+                        [
+                            str(analysis["project"]),
+                            str(analysis["summary"]["total_evaluated_samples"]),
+                            _metric(analysis["summary"]["mean_predicted_risk"]),
+                            _percentage_metric(
+                                analysis["summary"]["high_risk_percentage"]
+                            ),
+                            _percentage_metric(
+                                analysis["risk_concentration"][
+                                    "top_10_percent_risk_contribution_percentage"
+                                ]
+                            ),
+                            _signal_names(
+                                analysis["summary"]["dominant_risk_signals"]
+                            ),
+                            str(analysis["temporal_analysis"]["direction"]),
+                        ]
+                        for analysis in analyses
+                    ],
+                )
+            )
+    else:
+        summary = intelligence["summary"]
+        concentration = intelligence["risk_concentration"]
+        temporal = intelligence["temporal_analysis"]
+        lines = [
+            f"- Overall fitted-model risk: mean "
+            f"{_metric(summary['mean_predicted_risk'])}; "
+            f"{summary['high_risk_sample_count']:,} of "
+            f"{summary['total_evaluated_samples']:,} samples "
+            f"({_percentage_metric(summary['high_risk_percentage'])}) are at or "
+            f"above the configured risk cutoff.",
+            f"- Concentration: the top 10% of samples contribute "
+            f"{_percentage_metric(concentration['top_10_percent_risk_contribution_percentage'])} "
+            "of aggregate predicted risk; "
+            f"{concentration['samples_responsible_for_50_percent_of_predicted_risk']:,} "
+            "samples contribute its first 50%.",
+            f"- Dominant risk signals: "
+            f"{_signal_names(summary['dominant_risk_signals'])}.",
+            f"- Temporal direction: {temporal['direction']}"
+            + ("." if temporal["supported"] else " (timestamps unavailable)."),
+        ]
+        hotspots = intelligence.get("hotspots", [])[:3]
+        if hotspots:
+            lines.append(
+                "- Top recurring hotspots: "
+                + ", ".join(
+                    f"`{row['identifier']}` ({row['high_risk_count']} high-risk)"
+                    for row in hotspots
+                )
+                + "."
+            )
+
+    if not priority.empty:
+        lines.extend(
+            [
+                "",
+                "Top inspection priorities:",
+                "",
+                *_markdown_table(
+                    ["Project", "Rank", "Identifier", "Risk", "Priority score"],
+                    [
+                        [
+                            str(row.project),
+                            str(row.rank),
+                            str(row.identifier) or "unavailable",
+                            _metric(row.predicted_risk),
+                            _metric(row.priority_score),
+                        ]
+                        for row in priority.groupby("project", sort=False)
+                        .head(3)
+                        .itertuples(index=False)
+                    ],
+                ),
+            ]
+        )
+    return lines
+
+
+def build_markdown_report(
+    report: EvaluationReport,
+    *,
+    project_intelligence: dict[str, Any] | None = None,
+    developer_priority: pd.DataFrame | None = None,
+) -> str:
     """Build a concise report from the same normalized data saved to CSV/JSON."""
     dataset = report.dataset_summary
     explanation_summary = report.explanation_summary or build_explanation_summary(
@@ -146,6 +284,10 @@ def build_markdown_report(report: EvaluationReport) -> str:
     actionable_insights = report.actionable_insights or build_actionable_insights(
         report.prediction_explanations
     )
+    if project_intelligence is None or developer_priority is None:
+        resolved = _resolved_project_intelligence(report)
+        project_intelligence = resolved.artifact
+        developer_priority = resolved.developer_priority
     lines = [
         "# Sentinel V6 evaluation report",
         "",
@@ -200,6 +342,10 @@ def build_markdown_report(report: EvaluationReport) -> str:
         "- Recommendations translate the strongest local contributions into "
         "developer inspection prompts.",
         "",
+        "## Project Risk Intelligence",
+        "",
+        *_project_intelligence_lines(project_intelligence, developer_priority),
+        "",
         "## Artifacts",
         "",
         "Machine-readable metrics and comparisons are in `metrics.json`, "
@@ -209,7 +355,9 @@ def build_markdown_report(report: EvaluationReport) -> str:
         "`risk_summary.json`. Local feature-level contributions and their "
         "aggregate summary are in `prediction_explanations.csv` and "
         "`explanation_summary.json`. Developer-facing per-sample guidance and "
-        "common signals are in `actionable_insights.json`.",
+        "common signals are in `actionable_insights.json`. Project-level summaries "
+        "are in `project_intelligence.json`, and the complete deterministic "
+        "inspection queue is in `developer_priority.csv`.",
         "",
     ]
     return "\n".join(lines)
@@ -305,12 +453,28 @@ def save_evaluation_report(
         + "\n",
         encoding="utf-8",
     )
+    project_intelligence = _resolved_project_intelligence(report)
+    paths["project_intelligence"].write_text(
+        json.dumps(
+            _json_safe(project_intelligence.artifact), indent=2, sort_keys=True
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    project_intelligence.developer_priority.to_csv(
+        paths["developer_priority"], index=False
+    )
     _save_confusion_matrix(
         report.confusion_matrix,
         report.confusion_matrix_label,
         paths["confusion_matrix"],
     )
     paths["summary"].write_text(
-        build_markdown_report(report), encoding="utf-8"
+        build_markdown_report(
+            report,
+            project_intelligence=project_intelligence.artifact,
+            developer_priority=project_intelligence.developer_priority,
+        ),
+        encoding="utf-8",
     )
     return paths
