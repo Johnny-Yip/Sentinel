@@ -3,7 +3,8 @@
 Sentinel is a machine-learning software engineering project intended to predict
 which Java source files are most likely to be involved in future defects. V6
 adds snapshot-level defect-risk scoring, individual prediction explanations,
-actionable developer inspection guidance, and project-level risk intelligence
+actionable developer inspection guidance, project-level risk intelligence,
+and diagnostic explanation/action evaluation
 to V5's unified evaluation and experiment reports. It builds on
 the V1 repository miner, V2 leakage-safe feature pipeline, V3 reproducible
 sklearn baselines, and V4 cross-project evaluation. It does not expose an
@@ -37,6 +38,9 @@ ranked, explained, actionable, and project-level V6 risk intelligence
         |
         v
 unified developer risk brief and inspection queue
+        |
+        v
+diagnostic explanation stability, evidence, specificity, and alignment
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -746,7 +750,7 @@ Every unified evaluation now adds:
 - `developer_actions.csv`, the complete queue of samples at or above the
   existing configured risk cutoff.
 
-The earlier V5 and V6 artifacts remain unchanged. `report.md` also ends with a
+The earlier V5 and V6 artifacts remain unchanged. `report.md` also includes a
 concise `Developer Risk Brief` section containing the attention level,
 concentration result, recurring hotspot, temporal direction, highest-risk
 signal, up to five actions per project, and an interpretation warning.
@@ -868,6 +872,158 @@ the V1 schema cannot reliably retire deleted or renamed paths; small projects
 produce coarse relative tiers; and missing identifiers or timestamps limit
 hotspot and temporal analysis. The brief supports prioritization, not automated
 defect adjudication.
+
+## V6 Phase 6: Explanation and Action Evaluation
+
+Phase 6 evaluates the explanation and action outputs from Phases 1–5 using
+deterministic **diagnostic evaluation heuristics**. It reuses the evaluated risk
+ranking, retained `prediction_explanations.csv` vectors, and the complete
+`developer_actions.csv` queue, including its attached evidence. It does not
+train another model, recompute explanations, or change model/threshold
+selection. Existing evaluation commands and Phase 1–5 artifact schemas remain
+unchanged.
+
+Each unified evaluation additionally writes:
+
+- `explanation_action_evaluation.json`: schema version, experiment type, scope,
+  project count, evaluation counts, metric definitions, limitations, and a
+  `projects` array. Each project has its identifier, `evaluation_counts`,
+  `explanation_stability`, `evidence_coverage`, `action_specificity`,
+  `risk_explanation_alignment`, and limitations.
+- `explanation_action_evaluation.md`: a concise standalone diagnostic report.
+- `action_quality.csv`: one row per existing developer action, retaining its
+  project-local rank, tier, identifier, timestamp, and risk score; it adds the
+  coverage/specificity scores, specificity label, evidence flags/counts, and
+  available supporting explanations/signals as JSON text in CSV cells.
+
+The existing `report.md` ends with `## Explanation and Action Evaluation`.
+Within-project evaluation contains one project analysis for the temporal test
+population. Cross-project evaluation contains an independent entry and report
+section for every held-out project. Actions retain the Phase 5 project-local
+ranks and tiers. No pooled metric replaces per-project results.
+
+### Explanation stability
+
+Sort evaluated snapshots of each file chronologically within its project.
+Compare consecutive observations at distinct timestamps at most **62 days**
+apart, using cosine similarity of signed feature contributions. A pair is
+eligible only when both vectors have finite weights, nonzero norms, identical
+retained feature sets, and the same known model, evaluation mode, explanation
+method, and contribution space. No absent feature is filled with zero, and
+duplicate/ambiguous sample identities cannot supply a comparison.
+
+`mean_explanation_similarity` and `median_explanation_similarity` summarize
+eligible pair cosines in [-1, 1]. `stability_pair_count` counts those pairs;
+`stability_sample_count` counts distinct samples participating in them. With
+no eligible pair, both similarity metrics are null and counts are zero.
+Nearby timestamps of the same file are a proxy for similarity, not evidence
+that the underlying code or feature values remained similar.
+
+### Evidence coverage
+
+For each action, five equally weighted availability flags determine coverage:
+
+| Flag | Observed evidence required |
+| --- | --- |
+| `has_identifier` | A nonempty identifier/path from the action |
+| `has_timestamp` | A valid supplied snapshot timestamp |
+| `has_hotspot_evidence` | An identifier and an attached integer `recurring_high_risk_count >= 2`, following Phase 4's hotspot definition |
+| `has_explanation_evidence` | At least one named feature with a finite nonzero contribution in a uniquely matched stored vector or attached action evidence |
+| `has_signal_evidence` | An attached named signal or a positive integer `risk_signal_count` |
+
+`evidence_coverage_score = number_of_true_flags / 5`, in [0, 1]. Zero-valued
+placeholder recurrence/signal counts do not establish positive evidence.
+`evidence_item_count` adds one each for an available identifier, timestamp and
+hotspot record, plus `explanation_item_count` and `signal_item_count`.
+Explanation items are deduplicated by feature across the matched vector and
+attached evidence. Signal items are the maximum of distinct attached signal
+names and the supplied signal count; a count never generates invented names.
+Project summaries include mean/median scores, category counts, and item counts.
+An empty action set has null mean/median scores.
+
+Vector-to-action evidence joins require a known project, identifier and valid
+timestamp, with an unambiguous evaluated sample. Model/evaluation-mode metadata
+must agree where supplied. Embedded Phase 5 evidence can contain a feature
+omitted by `--explain-top-k`; it is preserved as action evidence and never used
+to reconstruct a missing vector weight.
+
+### Action specificity
+
+`specificity_score` is the fraction of four equally weighted checks satisfied:
+
+1. The structured action references a concrete identifier/path.
+2. It references an attached named signal, or names an available explanation
+   feature in its reason/recommendation.
+3. Its recommendation contains an inspection verb (for example inspect, review,
+   check or verify) plus a concrete target: an identifier, named signal/feature,
+   or a fixed term such as edits, diffs, tests, ownership, callers or history.
+4. The recommendation is concrete and has an identifier or signal/feature
+   reference, avoiding purely generic guidance such as “Review code”.
+
+Labels are `LOW` for scores below 0.5, `MODERATE` for scores from 0.5 up to
+0.75, and `HIGH` for scores at least 0.75. The CSV exposes each check; project
+summaries include mean/median scores and label counts. These are fixed English
+text/structure rules, with no external LLM or API.
+
+### Risk–explanation alignment
+
+High risk uses `risk_score >= risk_threshold`, the existing Phase 1 summary
+cutoff, independently of the validation-selected classification threshold.
+
+- `high_risk_sample_count`: evaluated samples meeting that cutoff.
+- `explained_high_risk_count`: high-risk samples with at least one uniquely
+  matched, finite, nonzero named feature contribution.
+- `explanation_coverage_rate`: explained high-risk count divided by high-risk
+  count; null when no samples meet the cutoff.
+- `mean_top_feature_share`: mean of `max(abs(weights)) / sum(abs(weights))`
+  over eligible nonzero retained vectors.
+- `mean_explanation_strength`: mean of `sum(abs(weights))` over eligible
+  explained high-risk vectors; null if their model, method, or contribution
+  space is mixed/unknown. This quantity is not a probability.
+
+The last two metrics include their eligible sample counts and are null when
+not computable. Nonfinite or incomplete vectors do not supply magnitude/share
+metrics. Missing identifiers, timestamps, evidence and undefined measurements
+remain null/unknown; availability flags only describe what was observed.
+
+### Evaluate existing artifacts without fitting or explaining
+
+The reusable API can evaluate an existing output directory directly:
+
+```python
+import json
+from pathlib import Path
+import pandas as pd
+from sentinel.evaluation import build_action_evaluation, build_action_evaluation_markdown
+
+directory = Path("reports/commons-lang-within")
+risk_summary = json.loads((directory / "risk_summary.json").read_text())
+result = build_action_evaluation(
+    pd.read_csv(directory / "risk_ranking.csv"),
+    pd.read_csv(directory / "prediction_explanations.csv"),
+    pd.read_csv(directory / "developer_actions.csv"),
+    risk_threshold=risk_summary["risk_threshold"],
+    experiment_type="within_project",  # Use "cross_project" for a LOPO report.
+)
+(directory / "explanation_action_evaluation.json").write_text(
+    json.dumps(result.artifact, indent=2, sort_keys=True, allow_nan=False) + "\n"
+)
+(directory / "explanation_action_evaluation.md").write_text(
+    build_action_evaluation_markdown(result.artifact)
+)
+result.action_quality.to_csv(directory / "action_quality.csv", index=False)
+```
+
+The normal `sentinel-evaluate within-project` and `cross-project` commands
+also produce these artifacts and append the report section automatically.
+
+These diagnostics do **not** prove an explanation is correct or causal, that
+guidance is useful to a human, or that following an action will prevent defects.
+Top-k truncation may inflate top-feature share and omits some attribution
+magnitude; stability cannot compare incompatible retained feature sets. Evidence
+coverage rewards available categories, even though recurrence is not expected
+for every useful action. Sparse data and missing metadata limit comparisons.
+All existing risk-label, attribution, and repository lifecycle limitations apply.
 
 ## Tests
 

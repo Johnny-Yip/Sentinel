@@ -5,9 +5,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from sentinel.cross_project.data import load_multi_repository_datasets
 from sentinel.evaluation.cli import main
+from sentinel.evaluation.action_evaluation import (
+    ACTION_EVALUATION_SCHEMA_VERSION,
+    ACTION_QUALITY_COLUMNS,
+    build_action_evaluation,
+)
 from sentinel.evaluation.decision_brief import (
     DECISION_BRIEF_SCHEMA_VERSION,
     DEVELOPER_ACTION_COLUMNS,
@@ -185,6 +191,64 @@ def sample_report() -> EvaluationReport:
     )
 
 
+def assert_phase6_artifacts(destination: Path, projects: set[str]) -> None:
+    def reject_constant(value: str) -> None:
+        raise AssertionError(f"Invalid JSON number: {value}")
+
+    artifact = json.loads(
+        (destination / "explanation_action_evaluation.json").read_text(),
+        parse_constant=reject_constant,
+    )
+    ranking = pd.read_csv(destination / "risk_ranking.csv")
+    explanations = pd.read_csv(destination / "prediction_explanations.csv")
+    actions = pd.read_csv(destination / "developer_actions.csv")
+    quality = pd.read_csv(destination / "action_quality.csv")
+    assert artifact["schema_version"] == ACTION_EVALUATION_SCHEMA_VERSION
+    assert artifact["project_count"] == len(projects)
+    assert {project["project"] for project in artifact["projects"]} == projects
+    assert tuple(quality.columns) == ACTION_QUALITY_COLUMNS
+    assert len(quality) == len(actions)
+    assert quality["evidence_coverage_score"].between(0, 1).all()
+    assert quality["specificity_score"].between(0, 1).all()
+    for column in ("supporting_evidence", "supporting_explanations", "supporting_signals"):
+        for value in quality[column].dropna():
+            json.loads(value, parse_constant=reject_constant)
+    # Reproduce solely from disk artifacts; selection/model objects are absent.
+    rebuilt = build_action_evaluation(
+        ranking, explanations, actions,
+        risk_threshold=artifact["metadata"]["risk_threshold"],
+        experiment_type=artifact["experiment_type"],
+    )
+    for project, repeated in zip(artifact["projects"], rebuilt.artifact["projects"]):
+        name = project["project"]
+        project_ranking = ranking.loc[ranking["project"] == name]
+        project_actions = actions.loc[actions["project"] == name]
+        assert project["evaluation_counts"]["evaluated_sample_count"] == len(project_ranking)
+        assert project["evaluation_counts"]["action_count"] == len(project_actions)
+        for section in ("explanation_stability", "risk_explanation_alignment"):
+            for key, value in project[section].items():
+                if value is None:
+                    assert repeated[section][key] is None
+                else:
+                    assert repeated[section][key] == pytest.approx(value)
+        isolated = build_action_evaluation(
+            project_ranking, explanations.loc[explanations["project"] == name],
+            project_actions, risk_threshold=artifact["metadata"]["risk_threshold"],
+            experiment_type="within_project",
+        )
+        assert isolated.artifact["projects"][0] == repeated
+    for source, target in (("identifier", "identifier"), ("snapshot_date", "snapshot_date")):
+        assert sorted(actions[source].dropna()) == sorted(quality[target].dropna())
+    standalone = (destination / "explanation_action_evaluation.md").read_text()
+    markdown = (destination / "report.md").read_text()
+    assert standalone.startswith("# Explanation and Action Evaluation")
+    assert "Diagnostic evaluation heuristics" in standalone
+    assert "## Explanation and Action Evaluation" in markdown
+    assert markdown.rfind("## Explanation and Action Evaluation") > markdown.rfind("## Developer Risk Brief")
+    for project in projects:
+        assert project in standalone
+
+
 def test_predict_proba_is_preferred_for_risk_scoring() -> None:
     scores, method = calculate_risk_scores(
         ProbabilityClassifier(), pd.DataFrame({"score": [0.2, 0.9]})
@@ -296,6 +360,7 @@ def test_report_generation_writes_v5_artifacts_plus_v6_risk_outputs(
     assert "## Project Risk Intelligence" in markdown
     assert "## Developer Risk Brief" in markdown
     assert markdown.rfind("## Developer Risk Brief") > markdown.rfind("## Artifacts")
+    assert_phase6_artifacts(paths["summary"].parent, {"owner/example"})
 
 
 def test_within_project_cli_creates_complete_report(
@@ -366,6 +431,7 @@ def test_within_project_cli_creates_complete_report(
         "normalized_contribution"
     ].sum()
     assert np.allclose(normalized.loc[nonzero], 1.0)
+    assert_phase6_artifacts(destination, {"owner/example"})
 
 
 def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None:
@@ -477,3 +543,35 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
         "owner/beta",
     }
     assert actions.groupby("project")["priority_rank"].min().eq(1).all()
+    assert_phase6_artifacts(destination, {"owner/alpha", "owner/beta"})
+
+
+def test_phase6_report_reuses_artifacts_and_preserves_phase1_to_5(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    report = sample_report()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Phase 6 must not train or recompute explanations")
+
+    monkeypatch.setattr("sentinel.evaluation.experiment.train_baselines", forbidden)
+    monkeypatch.setattr("sentinel.evaluation.experiment.run_cross_project_evaluation", forbidden)
+    monkeypatch.setattr("sentinel.evaluation.experiment.explain_predictions", forbidden)
+    first = save_evaluation_report(report, tmp_path / "fallback")
+    report.project_intelligence = json.loads(first["project_intelligence"].read_text())
+    report.developer_priority = pd.read_csv(first["developer_priority"])
+    report.decision_brief = json.loads(first["developer_risk_brief_json"].read_text())
+    report.developer_actions = pd.read_csv(first["developer_actions"])
+    report.explanation_action_evaluation = json.loads(first["explanation_action_evaluation_json"].read_text())
+    report.action_quality = pd.read_csv(first["action_quality"])
+    monkeypatch.setattr("sentinel.evaluation.reporting.build_action_evaluation", forbidden)
+    monkeypatch.setattr("sentinel.evaluation.reporting.build_decision_brief", forbidden)
+    monkeypatch.setattr("sentinel.evaluation.reporting.build_project_intelligence", forbidden)
+    second = save_evaluation_report(report, tmp_path / "cached")
+    # Previous structured artifacts keep their schemas and content; loading CSV
+    # can change float formatting, so compare those tables semantically.
+    for name, path in first.items():
+        if path.suffix == ".csv":
+            pd.testing.assert_frame_equal(pd.read_csv(path), pd.read_csv(second[name]))
+        else:
+            assert path.read_bytes() == second[name].read_bytes()

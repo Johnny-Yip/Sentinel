@@ -12,6 +12,10 @@ import pandas as pd
 from sentinel import __version__
 from sentinel.cross_project.data import MultiRepositoryDataset
 from sentinel.cross_project.experiment import run_cross_project_evaluation
+from sentinel.evaluation.action_evaluation import (
+    ACTION_QUALITY_COLUMNS,
+    build_action_evaluation,
+)
 from sentinel.evaluation.decision_brief import (
     DEVELOPER_ACTION_COLUMNS,
     build_decision_brief,
@@ -77,6 +81,10 @@ class EvaluationReport:
     decision_brief: dict[str, Any] = field(default_factory=dict)
     developer_actions: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=DEVELOPER_ACTION_COLUMNS)
+    )
+    explanation_action_evaluation: dict[str, Any] = field(default_factory=dict)
+    action_quality: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=ACTION_QUALITY_COLUMNS)
     )
 
 
@@ -266,6 +274,13 @@ def evaluate_within_project(
         experiment_type="within_project",
         model_metadata=risk_summary["model_metadata"],
     )
+    action_evaluation = build_action_evaluation(
+        risk_ranking,
+        prediction_explanations,
+        decision_brief.developer_actions,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="within_project",
+    )
     return EvaluationReport(
         experiment_type="within_project",
         dataset_summary=_within_dataset_summary(result),
@@ -288,6 +303,8 @@ def evaluate_within_project(
         developer_priority=project_intelligence.developer_priority,
         decision_brief=decision_brief.artifact,
         developer_actions=decision_brief.developer_actions,
+        explanation_action_evaluation=action_evaluation.artifact,
+        action_quality=action_evaluation.action_quality,
     )
 
 
@@ -493,6 +510,13 @@ def evaluate_cross_project(
         experiment_type="cross_project",
         model_metadata=risk_summary["model_metadata"],
     )
+    action_evaluation = build_action_evaluation(
+        risk_ranking,
+        prediction_explanations,
+        decision_brief.developer_actions,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="cross_project",
+    )
     return EvaluationReport(
         experiment_type="cross_project",
         dataset_summary=_cross_dataset_summary(dataset),
@@ -513,4 +537,6 @@ def evaluate_cross_project(
         developer_priority=project_intelligence.developer_priority,
         decision_brief=decision_brief.artifact,
         developer_actions=decision_brief.developer_actions,
+        explanation_action_evaluation=action_evaluation.artifact,
+        action_quality=action_evaluation.action_quality,
     )

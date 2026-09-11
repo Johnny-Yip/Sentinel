@@ -1,5 +1,12 @@
 """Unified Sentinel evaluation and risk report generation."""
 
+from sentinel.evaluation.action_evaluation import (
+    ACTION_EVALUATION_SCHEMA_VERSION,
+    ACTION_QUALITY_COLUMNS,
+    ActionEvaluationResult,
+    build_action_evaluation,
+    build_action_evaluation_markdown,
+)
 from sentinel.evaluation.decision_brief import (
     ATTENTION_LEVELS,
     DECISION_BRIEF_SCHEMA_VERSION,
@@ -42,6 +49,11 @@ from sentinel.evaluation.risk import (
 from sentinel.ml.evaluation import calculate_metrics, extract_feature_importance
 
 __all__ = [
+    "ACTION_EVALUATION_SCHEMA_VERSION",
+    "ACTION_QUALITY_COLUMNS",
+    "ActionEvaluationResult",
+    "build_action_evaluation",
+    "build_action_evaluation_markdown",
     "ATTENTION_LEVELS",
     "DECISION_BRIEF_SCHEMA_VERSION",
     "DEVELOPER_ACTION_COLUMNS",

@@ -10,6 +10,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from sentinel.evaluation.action_evaluation import (
+    ACTION_QUALITY_COLUMNS,
+    ActionEvaluationResult,
+    action_evaluation_markdown_lines,
+    build_action_evaluation,
+    build_action_evaluation_markdown,
+)
 from sentinel.evaluation.decision_brief import (
     DEVELOPER_ACTION_COLUMNS,
     DecisionBriefResult,
@@ -43,6 +50,9 @@ REPORT_FILENAMES = {
     "developer_risk_brief_json": "developer_risk_brief.json",
     "developer_risk_brief_markdown": "developer_risk_brief.md",
     "developer_actions": "developer_actions.csv",
+    "explanation_action_evaluation_json": "explanation_action_evaluation.json",
+    "explanation_action_evaluation_markdown": "explanation_action_evaluation.md",
+    "action_quality": "action_quality.csv",
 }
 
 
@@ -196,6 +206,26 @@ def _resolved_decision_brief(
     )
 
 
+def _resolved_action_evaluation(
+    report: EvaluationReport,
+    decision_brief: DecisionBriefResult,
+) -> ActionEvaluationResult:
+    """Evaluate retained artifacts for reports created before Phase 6."""
+    artifact = getattr(report, "explanation_action_evaluation", {})
+    if artifact:
+        quality = getattr(report, "action_quality", pd.DataFrame()).copy()
+        if quality.empty:
+            quality = pd.DataFrame(columns=ACTION_QUALITY_COLUMNS)
+        return ActionEvaluationResult(artifact, quality)
+    return build_action_evaluation(
+        report.risk_ranking,
+        report.prediction_explanations,
+        decision_brief.developer_actions,
+        risk_threshold=float(report.risk_summary["risk_threshold"]),
+        experiment_type=report.experiment_type,
+    )
+
+
 def _signal_names(records: list[dict[str, Any]]) -> str:
     return ", ".join(str(record["feature"]) for record in records[:3]) or "none"
 
@@ -307,6 +337,7 @@ def build_markdown_report(
     project_intelligence: dict[str, Any] | None = None,
     developer_priority: pd.DataFrame | None = None,
     decision_brief: dict[str, Any] | None = None,
+    explanation_action_evaluation: dict[str, Any] | None = None,
 ) -> str:
     """Build a concise report from the same normalized data saved to CSV/JSON."""
     dataset = report.dataset_summary
@@ -320,13 +351,19 @@ def build_markdown_report(
         resolved = _resolved_project_intelligence(report)
         project_intelligence = resolved.artifact
         developer_priority = resolved.developer_priority
-    if decision_brief is None:
+    if decision_brief is None or explanation_action_evaluation is None:
         intelligence_result = ProjectIntelligenceResult(
             project_intelligence, developer_priority
         )
-        decision_brief = _resolved_decision_brief(
+        decision_result = _resolved_decision_brief(
             report, intelligence_result
-        ).artifact
+        )
+        if decision_brief is None:
+            decision_brief = decision_result.artifact
+        if explanation_action_evaluation is None:
+            explanation_action_evaluation = _resolved_action_evaluation(
+                report, decision_result
+            ).artifact
     lines = [
         "# Sentinel V6 evaluation report",
         "",
@@ -399,11 +436,20 @@ def build_markdown_report(
         "inspection queue is in `developer_priority.csv`. The final decision "
         "summary is in `developer_risk_brief.json` and "
         "`developer_risk_brief.md`; its high-risk inspection queue is in "
-        "`developer_actions.csv`.",
+        "`developer_actions.csv`. Diagnostic explanation and action heuristics "
+        "are in `explanation_action_evaluation.json` and "
+        "`explanation_action_evaluation.md`; per-action scores and evidence flags "
+        "are in `action_quality.csv`.",
         "",
         "## Developer Risk Brief",
         "",
         *decision_brief_markdown_lines(decision_brief, embedded=True),
+        "",
+        "## Explanation and Action Evaluation",
+        "",
+        *action_evaluation_markdown_lines(
+            explanation_action_evaluation, embedded=True
+        ),
         "",
     ]
     return "\n".join(lines)
@@ -523,6 +569,22 @@ def save_evaluation_report(
     decision_brief.developer_actions.to_csv(
         paths["developer_actions"], index=False
     )
+    action_evaluation = _resolved_action_evaluation(report, decision_brief)
+    paths["explanation_action_evaluation_json"].write_text(
+        json.dumps(
+            _json_safe(action_evaluation.artifact),
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    paths["explanation_action_evaluation_markdown"].write_text(
+        build_action_evaluation_markdown(action_evaluation.artifact),
+        encoding="utf-8",
+    )
+    action_evaluation.action_quality.to_csv(paths["action_quality"], index=False)
     _save_confusion_matrix(
         report.confusion_matrix,
         report.confusion_matrix_label,
@@ -534,6 +596,7 @@ def save_evaluation_report(
             project_intelligence=project_intelligence.artifact,
             developer_priority=project_intelligence.developer_priority,
             decision_brief=decision_brief.artifact,
+            explanation_action_evaluation=action_evaluation.artifact,
         ),
         encoding="utf-8",
     )
