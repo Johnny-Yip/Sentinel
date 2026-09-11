@@ -12,6 +12,10 @@ import pandas as pd
 from sentinel import __version__
 from sentinel.cross_project.data import MultiRepositoryDataset
 from sentinel.cross_project.experiment import run_cross_project_evaluation
+from sentinel.evaluation.decision_brief import (
+    DEVELOPER_ACTION_COLUMNS,
+    build_decision_brief,
+)
 from sentinel.evaluation.explain import (
     EXPLANATION_COLUMNS,
     add_top_explanations_to_ranking,
@@ -69,6 +73,10 @@ class EvaluationReport:
     project_intelligence: dict[str, Any] = field(default_factory=dict)
     developer_priority: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=DEVELOPER_PRIORITY_COLUMNS)
+    )
+    decision_brief: dict[str, Any] = field(default_factory=dict)
+    developer_actions: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=DEVELOPER_ACTION_COLUMNS)
     )
 
 
@@ -248,6 +256,16 @@ def evaluate_within_project(
         risk_threshold=risk_summary["risk_threshold"],
         experiment_type="within_project",
     )
+    decision_brief = build_decision_brief(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        project_intelligence.artifact,
+        project_intelligence.developer_priority,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="within_project",
+        model_metadata=risk_summary["model_metadata"],
+    )
     return EvaluationReport(
         experiment_type="within_project",
         dataset_summary=_within_dataset_summary(result),
@@ -268,6 +286,8 @@ def evaluate_within_project(
         actionable_insights=actionable_insights,
         project_intelligence=project_intelligence.artifact,
         developer_priority=project_intelligence.developer_priority,
+        decision_brief=decision_brief.artifact,
+        developer_actions=decision_brief.developer_actions,
     )
 
 
@@ -463,6 +483,16 @@ def evaluate_cross_project(
         risk_threshold=risk_summary["risk_threshold"],
         experiment_type="cross_project",
     )
+    decision_brief = build_decision_brief(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        project_intelligence.artifact,
+        project_intelligence.developer_priority,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="cross_project",
+        model_metadata=risk_summary["model_metadata"],
+    )
     return EvaluationReport(
         experiment_type="cross_project",
         dataset_summary=_cross_dataset_summary(dataset),
@@ -481,4 +511,6 @@ def evaluate_cross_project(
         actionable_insights=actionable_insights,
         project_intelligence=project_intelligence.artifact,
         developer_priority=project_intelligence.developer_priority,
+        decision_brief=decision_brief.artifact,
+        developer_actions=decision_brief.developer_actions,
     )

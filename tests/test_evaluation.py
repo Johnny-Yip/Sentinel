@@ -8,6 +8,10 @@ import pandas as pd
 
 from sentinel.cross_project.data import load_multi_repository_datasets
 from sentinel.evaluation.cli import main
+from sentinel.evaluation.decision_brief import (
+    DECISION_BRIEF_SCHEMA_VERSION,
+    DEVELOPER_ACTION_COLUMNS,
+)
 from sentinel.evaluation.explain import (
     EXPLANATION_COLUMNS,
     add_top_explanations_to_ranking,
@@ -274,12 +278,24 @@ def test_report_generation_writes_v5_artifacts_plus_v6_risk_outputs(
     assert intelligence["summary"]["risk_threshold"] == 0.5
     assert list(priority.columns) == list(DEVELOPER_PRIORITY_COLUMNS)
     assert len(priority) == 4
+    brief = json.loads(
+        paths["developer_risk_brief_json"].read_text(encoding="utf-8")
+    )
+    actions = pd.read_csv(paths["developer_actions"])
+    assert brief["schema_version"] == DECISION_BRIEF_SCHEMA_VERSION
+    assert brief["projects"][0]["executive_summary"]["total_samples"] == 4
+    assert list(actions.columns) == list(DEVELOPER_ACTION_COLUMNS)
+    assert "# Sentinel Developer Risk Brief" in paths[
+        "developer_risk_brief_markdown"
+    ].read_text(encoding="utf-8")
     assert paths["confusion_matrix"].read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     markdown = paths["summary"].read_text(encoding="utf-8")
     assert "# Sentinel V6 evaluation report" in markdown
     assert "## Key findings" in markdown
     assert "## Actionable risk insights" in markdown
     assert "## Project Risk Intelligence" in markdown
+    assert "## Developer Risk Brief" in markdown
+    assert markdown.rfind("## Developer Risk Brief") > markdown.rfind("## Artifacts")
 
 
 def test_within_project_cli_creates_complete_report(
@@ -336,6 +352,11 @@ def test_within_project_cli_creates_complete_report(
     assert intelligence["summary"]["total_evaluated_samples"] == len(ranking)
     assert intelligence["metadata"]["threshold_semantics"]["risk_threshold"] == 0.8
     assert len(priority) == len(ranking)
+    brief = json.loads((destination / "developer_risk_brief.json").read_text())
+    actions = pd.read_csv(destination / "developer_actions.csv")
+    assert brief["analysis_scope"] == "single_project"
+    assert brief["projects"][0]["project"] == "owner/example"
+    assert list(actions.columns) == list(DEVELOPER_ACTION_COLUMNS)
     assert all(len(sample["insights"]) <= 3 for sample in actionable["samples"])
     assert all(column in ranking for column in RANKING_INSIGHT_COLUMNS)
     assert ranking["primary_risk_reason"].notna().all()
@@ -384,6 +405,11 @@ def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None
     )
     assert len(report.project_intelligence["projects"]) == 2
     assert report.developer_priority.groupby("project")["rank"].min().eq(1).all()
+    assert report.decision_brief["analysis_scope"] == "per_project"
+    assert {
+        project["project"] for project in report.decision_brief["projects"]
+    } == {"owner/alpha", "owner/beta"}
+    assert report.developer_actions.groupby("project")["priority_rank"].min().eq(1).all()
     assert {
         "top_risk_feature",
         "top_risk_contribution",
@@ -443,3 +469,11 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
         "owner/beta",
     }
     assert priority.groupby("project")["rank"].min().eq(1).all()
+    brief = json.loads((destination / "developer_risk_brief.json").read_text())
+    actions = pd.read_csv(destination / "developer_actions.csv")
+    assert brief["analysis_scope"] == "per_project"
+    assert {project["project"] for project in brief["projects"]} == {
+        "owner/alpha",
+        "owner/beta",
+    }
+    assert actions.groupby("project")["priority_rank"].min().eq(1).all()

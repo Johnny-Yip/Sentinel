@@ -34,6 +34,9 @@ unified V5 evaluation report
         |
         v
 ranked, explained, actionable, and project-level V6 risk intelligence
+        |
+        v
+unified developer risk brief and inspection queue
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -726,6 +729,145 @@ claim statistical significance. Contribution totals should only be compared
 within the same explanation method and contribution space. Sentinel does not
 prove that a file contains a defect, and missing timestamps or identifiers are
 reported explicitly instead of being fabricated.
+
+## V6 Phase 5: Unified Developer Risk Brief
+
+Phase 5 turns the existing Phase 1–4 outputs into one concise decision layer for
+developers. It consumes `risk_ranking.csv`, the full in-memory prediction
+explanations, `actionable_insights.json`, `project_intelligence.json`,
+`developer_priority.csv`, the feature insight registry, and available model
+metadata. It does not fit a model, rescore a sample, choose a threshold, or
+recompute an explanation.
+
+Every unified evaluation now adds:
+
+- `developer_risk_brief.json`, the stable machine-readable project brief;
+- `developer_risk_brief.md`, a standalone developer-facing rendering; and
+- `developer_actions.csv`, the complete queue of samples at or above the
+  existing configured risk cutoff.
+
+The earlier V5 and V6 artifacts remain unchanged. `report.md` also ends with a
+concise `Developer Risk Brief` section containing the attention level,
+concentration result, recurring hotspot, temporal direction, highest-risk
+signal, up to five actions per project, and an interpretation warning.
+
+### Risk tier definitions
+
+Tiers are project-local inspection priorities. Let `H` be the number of samples
+in one project whose `risk_score >= risk_threshold`. Sort those samples by the
+existing Phase 4 priority score, predicted risk, recurring-hotspot evidence,
+identifier, timestamp, existing reason/action text, and signal count. Then:
+
+- `CRITICAL`: the first `max(1, ceil(0.10 * H))` priority items;
+- `HIGH`: the remaining items through `ceil(0.30 * H)`;
+- `MEDIUM`: all remaining items at or above the cutoff; and
+- `LOW`: samples below the cutoff.
+
+When `H` is zero, every evaluated sample is `LOW` and there are no developer
+actions. Sparse projects need not contain every tier. Ranks and tier boundaries
+restart within each project. The names express relative inspection urgency;
+they are not calibrated defect probabilities or defect-severity labels.
+
+### Attention level definitions
+
+The executive-summary attention level is a deterministic workload heuristic
+based on the fraction of project samples at or above the same configured risk
+cutoff:
+
+- `LOW`: no samples meet the cutoff;
+- `MODERATE`: a non-zero share below 10% meets it;
+- `ELEVATED`: at least 10% but less than 25% meets it; and
+- `HIGH`: at least 25% meets it.
+
+The cutoff remains the Phase 1 `--risk-threshold` summary setting. Neither the
+cutoff nor the attention level replaces the validation-selected classification
+threshold, and neither is a calibrated probability.
+
+### Artifact schemas
+
+`developer_risk_brief.json` contains:
+
+```text
+schema_version
+experiment_type
+analysis_scope
+project_count
+projects[]
+  project
+  executive_summary
+    total_samples
+    high_risk_count
+    high_risk_rate
+    mean_risk
+    concentration_summary
+    top_recurring_hotspot
+    temporal_direction
+    highest_risk_signal
+    number_of_priority_items
+    overall_attention_level
+    risk_tier_counts
+  top_developer_actions[]
+  models_used
+metadata
+  input_dependencies
+  risk_tier_definitions
+  attention_level_definitions
+  tie_breaking_rules
+  feature_registry
+  model_metadata
+  limitations
+```
+
+Each entry in `top_developer_actions` contains `project`, `priority_rank`,
+`risk_tier`, `identifier`, `file_path`, `snapshot_date`, `predicted_risk`,
+`priority_score`, `short_reason`, `dominant_signal`, `recommended_action`, and
+`supporting_evidence`. The top list is limited to five per project.
+`developer_actions.csv` uses the same columns for the complete high-risk action
+queue and stores `supporting_evidence` as deterministic JSON text. Missing file
+paths, timestamps, signals, and explanation evidence remain empty/null; Sentinel
+does not manufacture replacements.
+
+Recommendations are copied from Phase 3's stable feature registry and are
+phrased as inspection, review, ownership, or testing suggestions. They are not
+claims that a defect exists. Supporting evidence records only available model
+outputs, such as the risk score and cutoff, recurring high-risk observations,
+dominant feature contribution, explanation method, and contribution space.
+
+### Within-project example
+
+```bash
+sentinel-evaluate within-project data/commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --risk-threshold 0.7 \
+  --random-state 42
+```
+
+This creates one project brief. Its action ranks and tiers apply only to the
+temporal test population for that project.
+
+### Cross-project example
+
+```bash
+sentinel-evaluate cross-project \
+  data/commons-lang_features.csv \
+  data/commons-io_features.csv \
+  data/commons-collections_features.csv \
+  --output-dir reports/cross-project \
+  --risk-threshold 0.7 \
+  --random-state 42
+```
+
+This creates a separate brief for every held-out project. Each section has its
+own tier counts, attention level, hotspot, temporal description, and action
+ranks. Sentinel does not pool project risk levels or compare absolute rankings
+across independently selected held-out models.
+
+Phase 5 inherits the limitations of its inputs: scores may be uncalibrated;
+feature contributions are model descriptions rather than causal explanations;
+the V1 schema cannot reliably retire deleted or renamed paths; small projects
+produce coarse relative tiers; and missing identifiers or timestamps limit
+hotspot and temporal analysis. The brief supports prioritization, not automated
+defect adjudication.
 
 ## Tests
 

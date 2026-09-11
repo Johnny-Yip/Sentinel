@@ -10,6 +10,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from sentinel.evaluation.decision_brief import (
+    DEVELOPER_ACTION_COLUMNS,
+    DecisionBriefResult,
+    build_decision_brief,
+    build_decision_brief_markdown,
+    decision_brief_markdown_lines,
+)
 from sentinel.evaluation.explain import build_explanation_summary
 from sentinel.evaluation.experiment import EvaluationReport
 from sentinel.evaluation.insights import build_actionable_insights
@@ -33,6 +40,9 @@ REPORT_FILENAMES = {
     "actionable_insights": "actionable_insights.json",
     "project_intelligence": "project_intelligence.json",
     "developer_priority": "developer_priority.csv",
+    "developer_risk_brief_json": "developer_risk_brief.json",
+    "developer_risk_brief_markdown": "developer_risk_brief.md",
+    "developer_actions": "developer_actions.csv",
 }
 
 
@@ -165,6 +175,27 @@ def _resolved_project_intelligence(
     )
 
 
+def _resolved_decision_brief(
+    report: EvaluationReport,
+    project_intelligence: ProjectIntelligenceResult,
+) -> DecisionBriefResult:
+    if report.decision_brief:
+        actions = report.developer_actions.copy()
+        if actions.empty:
+            actions = pd.DataFrame(columns=DEVELOPER_ACTION_COLUMNS)
+        return DecisionBriefResult(report.decision_brief, actions)
+    return build_decision_brief(
+        report.risk_ranking,
+        report.prediction_explanations,
+        report.actionable_insights,
+        project_intelligence.artifact,
+        project_intelligence.developer_priority,
+        risk_threshold=float(report.risk_summary["risk_threshold"]),
+        experiment_type=report.experiment_type,
+        model_metadata=report.risk_summary.get("model_metadata", {}),
+    )
+
+
 def _signal_names(records: list[dict[str, Any]]) -> str:
     return ", ".join(str(record["feature"]) for record in records[:3]) or "none"
 
@@ -275,6 +306,7 @@ def build_markdown_report(
     *,
     project_intelligence: dict[str, Any] | None = None,
     developer_priority: pd.DataFrame | None = None,
+    decision_brief: dict[str, Any] | None = None,
 ) -> str:
     """Build a concise report from the same normalized data saved to CSV/JSON."""
     dataset = report.dataset_summary
@@ -288,6 +320,13 @@ def build_markdown_report(
         resolved = _resolved_project_intelligence(report)
         project_intelligence = resolved.artifact
         developer_priority = resolved.developer_priority
+    if decision_brief is None:
+        intelligence_result = ProjectIntelligenceResult(
+            project_intelligence, developer_priority
+        )
+        decision_brief = _resolved_decision_brief(
+            report, intelligence_result
+        ).artifact
     lines = [
         "# Sentinel V6 evaluation report",
         "",
@@ -357,7 +396,14 @@ def build_markdown_report(
         "`explanation_summary.json`. Developer-facing per-sample guidance and "
         "common signals are in `actionable_insights.json`. Project-level summaries "
         "are in `project_intelligence.json`, and the complete deterministic "
-        "inspection queue is in `developer_priority.csv`.",
+        "inspection queue is in `developer_priority.csv`. The final decision "
+        "summary is in `developer_risk_brief.json` and "
+        "`developer_risk_brief.md`; its high-risk inspection queue is in "
+        "`developer_actions.csv`.",
+        "",
+        "## Developer Risk Brief",
+        "",
+        *decision_brief_markdown_lines(decision_brief, embedded=True),
         "",
     ]
     return "\n".join(lines)
@@ -464,6 +510,19 @@ def save_evaluation_report(
     project_intelligence.developer_priority.to_csv(
         paths["developer_priority"], index=False
     )
+    decision_brief = _resolved_decision_brief(report, project_intelligence)
+    paths["developer_risk_brief_json"].write_text(
+        json.dumps(_json_safe(decision_brief.artifact), indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    paths["developer_risk_brief_markdown"].write_text(
+        build_decision_brief_markdown(decision_brief.artifact),
+        encoding="utf-8",
+    )
+    decision_brief.developer_actions.to_csv(
+        paths["developer_actions"], index=False
+    )
     _save_confusion_matrix(
         report.confusion_matrix,
         report.confusion_matrix_label,
@@ -474,6 +533,7 @@ def save_evaluation_report(
             report,
             project_intelligence=project_intelligence.artifact,
             developer_priority=project_intelligence.developer_priority,
+            decision_brief=decision_brief.artifact,
         ),
         encoding="utf-8",
     )

@@ -1,5 +1,16 @@
 """Unified Sentinel evaluation and risk report generation."""
 
+from sentinel.evaluation.decision_brief import (
+    ATTENTION_LEVELS,
+    DECISION_BRIEF_SCHEMA_VERSION,
+    DEVELOPER_ACTION_COLUMNS,
+    RISK_TIERS,
+    DecisionBriefResult,
+    assign_risk_tiers,
+    attention_level,
+    build_decision_brief,
+    build_decision_brief_markdown,
+)
 from sentinel.evaluation.explain import (
     add_top_explanations_to_ranking,
     build_explanation_summary,
@@ -31,6 +42,11 @@ from sentinel.evaluation.risk import (
 from sentinel.ml.evaluation import calculate_metrics, extract_feature_importance
 
 __all__ = [
+    "ATTENTION_LEVELS",
+    "DECISION_BRIEF_SCHEMA_VERSION",
+    "DEVELOPER_ACTION_COLUMNS",
+    "RISK_TIERS",
+    "DecisionBriefResult",
     "EvaluationReport",
     "FEATURE_INSIGHTS",
     "explain_predictions",
@@ -43,6 +59,10 @@ __all__ = [
     "PROJECT_INTELLIGENCE_SCHEMA_VERSION",
     "ProjectIntelligenceResult",
     "add_actionable_insights_to_ranking",
+    "assign_risk_tiers",
+    "attention_level",
+    "build_decision_brief",
+    "build_decision_brief_markdown",
     "calculate_metrics",
     "calculate_risk_scores",
     "build_risk_ranking",
