@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,12 @@ from sentinel.cross_project.experiment import run_cross_project_evaluation
 from sentinel.evaluation.action_evaluation import (
     ACTION_QUALITY_COLUMNS,
     build_action_evaluation,
+)
+from sentinel.evaluation.calibration import (
+    DEFAULT_CALIBRATION_BINS,
+    RiskCalibrationResult,
+    build_risk_calibration,
+    validate_calibration_options,
 )
 from sentinel.evaluation.decision_brief import (
     DEVELOPER_ACTION_COLUMNS,
@@ -86,6 +93,7 @@ class EvaluationReport:
     action_quality: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=ACTION_QUALITY_COLUMNS)
     )
+    risk_calibration: RiskCalibrationResult | None = None
 
 
 def _date_range(data: pd.DataFrame) -> dict[str, str]:
@@ -189,9 +197,14 @@ def evaluate_within_project(
     top_risk: int = DEFAULT_TOP_RISK,
     risk_threshold: float = DEFAULT_RISK_THRESHOLD,
     explain_top_k: int | None = None,
+    calibration_bins: int = DEFAULT_CALIBRATION_BINS,
+    analysis_thresholds: Sequence[float] | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
     """Run V3 temporal evaluation under the unified V6 report contract."""
+    calibration_bins, analysis_thresholds = validate_calibration_options(
+        calibration_bins, analysis_thresholds
+    )
     result = train_baselines(
         chronological_split(data),
         random_state=random_state,
@@ -305,6 +318,12 @@ def evaluate_within_project(
         developer_actions=decision_brief.developer_actions,
         explanation_action_evaluation=action_evaluation.artifact,
         action_quality=action_evaluation.action_quality,
+        risk_calibration=build_risk_calibration(
+            risk_ranking,
+            experiment_type="within_project",
+            calibration_bins=calibration_bins,
+            analysis_thresholds=analysis_thresholds,
+        ),
     )
 
 
@@ -374,9 +393,14 @@ def evaluate_cross_project(
     top_risk: int = DEFAULT_TOP_RISK,
     risk_threshold: float = DEFAULT_RISK_THRESHOLD,
     explain_top_k: int | None = None,
+    calibration_bins: int = DEFAULT_CALIBRATION_BINS,
+    analysis_thresholds: Sequence[float] | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
     """Run V4 leave-one-project-out evaluation under the V6 report contract."""
+    calibration_bins, analysis_thresholds = validate_calibration_options(
+        calibration_bins, analysis_thresholds
+    )
     result = run_cross_project_evaluation(
         dataset,
         random_state=random_state,
@@ -539,4 +563,10 @@ def evaluate_cross_project(
         developer_actions=decision_brief.developer_actions,
         explanation_action_evaluation=action_evaluation.artifact,
         action_quality=action_evaluation.action_quality,
+        risk_calibration=build_risk_calibration(
+            risk_ranking,
+            experiment_type="cross_project",
+            calibration_bins=calibration_bins,
+            analysis_thresholds=analysis_thresholds,
+        ),
     )

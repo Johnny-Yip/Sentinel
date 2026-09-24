@@ -10,11 +10,12 @@ from pathlib import Path
 import pandas as pd
 
 from sentinel.cross_project.data import load_multi_repository_datasets
+from sentinel.evaluation.calibration import DEFAULT_CALIBRATION_BINS, build_risk_calibration
 from sentinel.evaluation.experiment import (
     evaluate_cross_project,
     evaluate_within_project,
 )
-from sentinel.evaluation.reporting import save_evaluation_report
+from sentinel.evaluation.reporting import save_evaluation_report, save_risk_calibration
 from sentinel.evaluation.risk import DEFAULT_RISK_THRESHOLD, DEFAULT_TOP_RISK
 from sentinel.ml.data import MLError, load_dataset
 from sentinel.ml.models import DEFAULT_RANDOM_STATE
@@ -42,6 +43,7 @@ def _unit_interval(value: str) -> float:
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
+    _add_calibration_options(parser)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -81,6 +83,17 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_calibration_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--calibration-bins", type=_positive_integer, default=DEFAULT_CALIBRATION_BINS,
+        help="Number of equal-width probability bins (default: 10)",
+    )
+    parser.add_argument(
+        "--analysis-thresholds", type=_unit_interval, nargs="+",
+        help="Retrospective threshold candidates (default: 0 to 1 in steps of 0.05)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate Sentinel models and generate a unified V6 report."
@@ -103,10 +116,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional V3 metadata.json for same-vs-cross comparison",
     )
     _add_common_options(cross)
+    calibration = commands.add_parser(
+        "calibrate", help="Analyze an existing risk_ranking.csv without fitting models"
+    )
+    calibration.add_argument("risk_ranking_csv", type=Path)
+    calibration.add_argument(
+        "--evaluation-mode", choices=("within_project", "cross_project"), required=True,
+        help="Evaluation scope of the source artifact",
+    )
+    calibration.add_argument(
+        "--output-dir", type=Path,
+        help="Output directory (default: source CSV directory); updates report.md",
+    )
+    _add_calibration_options(calibration)
     return parser
 
 
 def _default_output_dir(args: argparse.Namespace) -> Path:
+    if args.experiment_type == "calibrate":
+        return args.risk_ranking_csv.parent
     if args.experiment_type == "within-project":
         stem = args.feature_csv.stem.removesuffix("_features")
         return Path("reports") / f"{stem}-within-project"
@@ -117,7 +145,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output_dir = args.output_dir or _default_output_dir(args)
     try:
-        if args.experiment_type == "within-project":
+        if args.experiment_type == "calibrate":
+            ranking = pd.read_csv(args.risk_ranking_csv, float_precision="round_trip")
+            result = build_risk_calibration(
+                ranking, experiment_type=args.evaluation_mode,
+                calibration_bins=args.calibration_bins,
+                analysis_thresholds=args.analysis_thresholds,
+            )
+            paths = save_risk_calibration(result, output_dir)
+        elif args.experiment_type == "within-project":
             print(f"Loading and validating {args.feature_csv}...")
             data = load_dataset(args.feature_csv)
             report = evaluate_within_project(
@@ -126,6 +162,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 top_risk=args.top_risk,
                 risk_threshold=args.risk_threshold,
                 explain_top_k=args.explain_top_k,
+                calibration_bins=args.calibration_bins,
+                analysis_thresholds=args.analysis_thresholds,
                 progress=print,
             )
         else:
@@ -138,9 +176,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 top_risk=args.top_risk,
                 risk_threshold=args.risk_threshold,
                 explain_top_k=args.explain_top_k,
+                calibration_bins=args.calibration_bins,
+                analysis_thresholds=args.analysis_thresholds,
                 progress=print,
             )
-        paths = save_evaluation_report(report, output_dir)
+        if args.experiment_type != "calibrate":
+            paths = save_evaluation_report(report, output_dir)
     except (
         MLError,
         OSError,

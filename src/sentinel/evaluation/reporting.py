@@ -17,6 +17,12 @@ from sentinel.evaluation.action_evaluation import (
     build_action_evaluation,
     build_action_evaluation_markdown,
 )
+from sentinel.evaluation.calibration import (
+    CALIBRATION_SECTION,
+    RiskCalibrationResult,
+    build_risk_calibration,
+    calibration_markdown_lines,
+)
 from sentinel.evaluation.decision_brief import (
     DEVELOPER_ACTION_COLUMNS,
     DecisionBriefResult,
@@ -34,7 +40,14 @@ from sentinel.evaluation.project_intelligence import (
 )
 
 
+CALIBRATION_FILENAMES = {
+    "calibration": "calibration.csv",
+    "threshold_analysis": "threshold_analysis.csv",
+    "calibration_summary": "calibration_summary.json",
+}
+
 REPORT_FILENAMES = {
+    **CALIBRATION_FILENAMES,
     "metrics": "metrics.json",
     "model_comparison": "model_comparison.csv",
     "feature_importance": "feature_importance.csv",
@@ -226,6 +239,46 @@ def _resolved_action_evaluation(
     )
 
 
+def _resolved_calibration(report: EvaluationReport) -> RiskCalibrationResult:
+    """Support reports constructed before Phase 7 without model access."""
+    result = getattr(report, "risk_calibration", None)
+    return result if result is not None else build_risk_calibration(
+        report.risk_ranking, experiment_type=report.experiment_type
+    )
+
+
+def save_risk_calibration(
+    result: RiskCalibrationResult, output_dir: str | Path,
+) -> dict[str, Path]:
+    """Save Phase 7 only, appending/replacing its section in report.md.
+
+    This supports artifact-only analysis of existing Phase 1–6 output directories.
+    Earlier report sections and artifacts are retained.
+    """
+    destination = Path(output_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    paths = {name: destination / filename for name, filename in CALIBRATION_FILENAMES.items()}
+    paths["calibration_summary"].write_text(
+        json.dumps(result.artifact, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    result.calibration.to_csv(paths["calibration"], index=False)
+    result.threshold_analysis.to_csv(paths["threshold_analysis"], index=False)
+    paths["summary"] = destination / "report.md"
+    previous = paths["summary"].read_text(encoding="utf-8") if paths["summary"].exists() else ""
+    lines = previous.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if line.rstrip() == CALIBRATION_SECTION), None)
+    section = "\n".join(calibration_markdown_lines(result.artifact))
+    if start is None:
+        markdown = previous + ("\n\n" if previous else "") + section
+    else:
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        suffix = "".join(lines[end:])
+        markdown = "".join(lines[:start]) + section + ("\n" + suffix if suffix else "")
+    paths["summary"].write_text(markdown, encoding="utf-8")
+    return paths
+
+
 def _signal_names(records: list[dict[str, Any]]) -> str:
     return ", ".join(str(record["feature"]) for record in records[:3]) or "none"
 
@@ -338,6 +391,7 @@ def build_markdown_report(
     developer_priority: pd.DataFrame | None = None,
     decision_brief: dict[str, Any] | None = None,
     explanation_action_evaluation: dict[str, Any] | None = None,
+    calibration_summary: dict[str, Any] | None = None,
 ) -> str:
     """Build a concise report from the same normalized data saved to CSV/JSON."""
     dataset = report.dataset_summary
@@ -452,6 +506,10 @@ def build_markdown_report(
         ),
         "",
     ]
+    lines.extend(calibration_markdown_lines(
+        calibration_summary if calibration_summary is not None
+        else _resolved_calibration(report).artifact
+    ))
     return "\n".join(lines)
 
 
@@ -585,6 +643,13 @@ def save_evaluation_report(
         encoding="utf-8",
     )
     action_evaluation.action_quality.to_csv(paths["action_quality"], index=False)
+    calibration = _resolved_calibration(report)
+    paths["calibration_summary"].write_text(
+        json.dumps(calibration.artifact, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    calibration.calibration.to_csv(paths["calibration"], index=False)
+    calibration.threshold_analysis.to_csv(paths["threshold_analysis"], index=False)
     _save_confusion_matrix(
         report.confusion_matrix,
         report.confusion_matrix_label,
@@ -597,6 +662,7 @@ def save_evaluation_report(
             developer_priority=project_intelligence.developer_priority,
             decision_brief=decision_brief.artifact,
             explanation_action_evaluation=action_evaluation.artifact,
+            calibration_summary=calibration.artifact,
         ),
         encoding="utf-8",
     )

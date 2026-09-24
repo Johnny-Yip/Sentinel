@@ -1,5 +1,15 @@
 """Unified Sentinel evaluation and risk report generation."""
 
+from sentinel.evaluation.calibration import (
+    CALIBRATION_COLUMNS,
+    CALIBRATION_SCHEMA_VERSION,
+    DEFAULT_ANALYSIS_THRESHOLDS,
+    DEFAULT_CALIBRATION_BINS,
+    THRESHOLD_ANALYSIS_COLUMNS,
+    RiskCalibrationResult,
+    build_risk_calibration,
+    calibration_markdown_lines,
+)
 from sentinel.evaluation.action_evaluation import (
     ACTION_EVALUATION_SCHEMA_VERSION,
     ACTION_QUALITY_COLUMNS,
@@ -40,7 +50,7 @@ from sentinel.evaluation.project_intelligence import (
     build_project_intelligence,
     calculate_risk_concentration,
 )
-from sentinel.evaluation.reporting import save_evaluation_report
+from sentinel.evaluation.reporting import save_evaluation_report, save_risk_calibration
 from sentinel.evaluation.risk import (
     build_risk_ranking,
     build_risk_summary,
@@ -49,6 +59,15 @@ from sentinel.evaluation.risk import (
 from sentinel.ml.evaluation import calculate_metrics, extract_feature_importance
 
 __all__ = [
+    "CALIBRATION_COLUMNS",
+    "CALIBRATION_SCHEMA_VERSION",
+    "DEFAULT_ANALYSIS_THRESHOLDS",
+    "DEFAULT_CALIBRATION_BINS",
+    "THRESHOLD_ANALYSIS_COLUMNS",
+    "RiskCalibrationResult",
+    "build_risk_calibration",
+    "calibration_markdown_lines",
+    "save_risk_calibration",
     "ACTION_EVALUATION_SCHEMA_VERSION",
     "ACTION_QUALITY_COLUMNS",
     "ActionEvaluationResult",

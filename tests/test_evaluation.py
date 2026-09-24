@@ -9,6 +9,11 @@ import pytest
 
 from sentinel.cross_project.data import load_multi_repository_datasets
 from sentinel.evaluation.cli import main
+from sentinel.evaluation.calibration import (
+    CALIBRATION_COLUMNS,
+    THRESHOLD_ANALYSIS_COLUMNS,
+    build_risk_calibration,
+)
 from sentinel.evaluation.action_evaluation import (
     ACTION_EVALUATION_SCHEMA_VERSION,
     ACTION_QUALITY_COLUMNS,
@@ -249,6 +254,40 @@ def assert_phase6_artifacts(destination: Path, projects: set[str]) -> None:
         assert project in standalone
 
 
+def assert_phase7_artifacts(destination: Path, projects: set[str]) -> None:
+    def reject_constant(value: str) -> None:
+        raise AssertionError(f"Invalid JSON number: {value}")
+
+    artifact = json.loads(
+        (destination / "calibration_summary.json").read_text(),
+        parse_constant=reject_constant,
+    )
+    ranking = pd.read_csv(destination / "risk_ranking.csv", float_precision="round_trip")
+    calibration = pd.read_csv(destination / "calibration.csv", float_precision="round_trip")
+    thresholds = pd.read_csv(destination / "threshold_analysis.csv", float_precision="round_trip")
+    assert tuple(calibration.columns) == CALIBRATION_COLUMNS
+    assert tuple(thresholds.columns) == THRESHOLD_ANALYSIS_COLUMNS
+    assert {project["project"] for project in artifact["projects"]} == projects
+    rebuilt = build_risk_calibration(
+        ranking, experiment_type=artifact["experiment_type"],
+        calibration_bins=artifact["metadata"]["calibration_bins"],
+        analysis_thresholds=artifact["metadata"]["analysis_thresholds"],
+    )
+    assert artifact == rebuilt.artifact
+    pd.testing.assert_frame_equal(calibration, rebuilt.calibration, check_dtype=False)
+    pd.testing.assert_frame_equal(thresholds, rebuilt.threshold_analysis, check_dtype=False)
+    for project in artifact["projects"]:
+        name = project["project"]
+        isolated = build_risk_calibration(
+            ranking.loc[ranking.project == name], experiment_type="within_project",
+            calibration_bins=artifact["metadata"]["calibration_bins"],
+            analysis_thresholds=artifact["metadata"]["analysis_thresholds"],
+        )
+        assert project == isolated.artifact["projects"][0]
+        assert project["valid_samples"] == int((ranking.project == name).sum())
+    assert "## Risk Calibration & Operating Threshold" in (destination / "report.md").read_text()
+
+
 def test_predict_proba_is_preferred_for_risk_scoring() -> None:
     scores, method = calculate_risk_scores(
         ProbabilityClassifier(), pd.DataFrame({"score": [0.2, 0.9]})
@@ -361,6 +400,7 @@ def test_report_generation_writes_v5_artifacts_plus_v6_risk_outputs(
     assert "## Developer Risk Brief" in markdown
     assert markdown.rfind("## Developer Risk Brief") > markdown.rfind("## Artifacts")
     assert_phase6_artifacts(paths["summary"].parent, {"owner/example"})
+    assert_phase7_artifacts(paths["summary"].parent, {"owner/example"})
 
 
 def test_within_project_cli_creates_complete_report(
@@ -384,6 +424,12 @@ def test_within_project_cli_creates_complete_report(
             "0.8",
             "--explain-top-k",
             "3",
+            "--calibration-bins",
+            "4",
+            "--analysis-thresholds",
+            "0.25",
+            "0.5",
+            "0.75",
         ]
     )
 
@@ -432,6 +478,10 @@ def test_within_project_cli_creates_complete_report(
     ].sum()
     assert np.allclose(normalized.loc[nonzero], 1.0)
     assert_phase6_artifacts(destination, {"owner/example"})
+    assert_phase7_artifacts(destination, {"owner/example"})
+    calibration = json.loads((destination / "calibration_summary.json").read_text())
+    assert calibration["metadata"]["calibration_bins"] == 4
+    assert calibration["metadata"]["analysis_thresholds"] == [0.25, 0.5, 0.75]
 
 
 def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None:
@@ -445,6 +495,9 @@ def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None
     report = evaluate_cross_project(dataset, random_state=13)
 
     assert report.experiment_type == "cross_project"
+    assert report.risk_calibration is not None
+    assert report.risk_calibration.artifact["analysis_scope"] == "per_project"
+    assert sum(project["valid_samples"] for project in report.risk_calibration.artifact["projects"]) == len(dataset.data)
     assert set(report.model_comparison["model"]) == {
         "dummy",
         "logistic_regression",
@@ -544,6 +597,7 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     }
     assert actions.groupby("project")["priority_rank"].min().eq(1).all()
     assert_phase6_artifacts(destination, {"owner/alpha", "owner/beta"})
+    assert_phase7_artifacts(destination, {"owner/alpha", "owner/beta"})
 
 
 def test_phase6_report_reuses_artifacts_and_preserves_phase1_to_5(
