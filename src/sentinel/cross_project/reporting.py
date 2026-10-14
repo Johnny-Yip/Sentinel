@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sentinel.ml.temporal import temporal_markdown_lines
 
 from sentinel.cross_project.experiment import CrossProjectResult
 from sentinel.ml.models import MODEL_ORDER
@@ -327,6 +328,9 @@ def build_markdown_report(result: CrossProjectResult) -> str:
             "",
         ]
     )
+    for repository, fold in result.report["leakage_audit"]["folds"].items():
+        lines.extend([f"### {repository}", ""])
+        lines.extend(temporal_markdown_lines(fold.get("temporal_maturity")))
     return "\n".join(lines)
 
 

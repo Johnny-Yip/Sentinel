@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 
-from sentinel.ml.data import DATE_COLUMN, InvalidDatasetError, TARGET_COLUMN
+from sentinel.ml.data import DATE_COLUMN, InvalidDatasetError, TARGET_COLUMN, validate_dataset
+from sentinel.ml.temporal import partition_mature_data
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class TemporalSplits:
     train: pd.DataFrame
     validation: pd.DataFrame
     test: pd.DataFrame
+    temporal_context: dict[str, Any] | None = None
 
     def frames(self) -> tuple[tuple[str, pd.DataFrame], ...]:
         return (
@@ -45,13 +48,18 @@ def chronological_split(
     data: pd.DataFrame,
     train_fraction: float = 0.70,
     validation_fraction: float = 0.15,
+    *,
+    validation_start: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
 ) -> TemporalSplits:
-    """Split whole snapshot dates into earliest 70%, next 15%, final 15%."""
+    """Choose date-only candidate boundaries, then purge immature label windows."""
     if train_fraction <= 0 or validation_fraction <= 0:
         raise ValueError("Training and validation fractions must be positive.")
     if train_fraction + validation_fraction >= 1:
         raise ValueError("Training and validation fractions must leave a test period.")
 
+    data = validate_dataset(data)
     dates = data[DATE_COLUMN].drop_duplicates().sort_values().tolist()
     if len(dates) < 3:
         raise InvalidDatasetError(
@@ -65,20 +73,17 @@ def chronological_split(
     )
     validation_end = min(validation_end, len(dates) - 1)
 
-    train_dates = set(dates[:train_date_count])
-    validation_dates = set(dates[train_date_count:validation_end])
-    test_dates = set(dates[validation_end:])
-
-    train = data.loc[data[DATE_COLUMN].isin(train_dates)].copy()
-    validation = data.loc[data[DATE_COLUMN].isin(validation_dates)].copy()
-    test = data.loc[data[DATE_COLUMN].isin(test_dates)].copy()
-
-    if train.empty or validation.empty or test.empty:
-        raise InvalidDatasetError(
-            "Chronological splitting produced an empty partition; more dates are required."
-        )
-
-    return TemporalSplits(train=train, validation=validation, test=test)
+    if (validation_start is None) != (test_start is None):
+        raise InvalidDatasetError("Supply both validation_start and test_start, or neither.")
+    frames, context = partition_mature_data(
+        data,
+        validation_start=dates[train_date_count] if validation_start is None else validation_start,
+        test_start=dates[validation_end] if test_start is None else test_start,
+        test_end=test_end,
+    )
+    context["boundary_source"] = "distinct_date_fraction_candidates" if validation_start is None else "explicit_calendar_dates"
+    context["candidate_fractions"] = {"train": train_fraction, "validation": validation_fraction}
+    return TemporalSplits(**frames, temporal_context=context)
 
 
 def summarize_split(name: str, frame: pd.DataFrame) -> SplitSummary:

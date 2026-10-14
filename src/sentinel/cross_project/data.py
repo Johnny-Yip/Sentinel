@@ -17,6 +17,7 @@ from sentinel.ml.data import (
     load_dataset,
     validate_dataset,
 )
+from sentinel.provenance import PROVENANCE_KEY, verify_feature_metadata
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ def _repository_summary(
 
 def load_multi_repository_datasets(
     feature_csvs: list[str | Path] | tuple[str | Path, ...],
+    *, dataset_metadata: str | Path | None = None,
 ) -> MultiRepositoryDataset:
     """Load datasets, enforce a common predictor schema, and combine rows.
 
@@ -85,7 +87,7 @@ def load_multi_repository_datasets(
 
     for feature_csv in feature_csvs:
         source = Path(feature_csv).expanduser().resolve()
-        data = load_dataset(source)
+        data = load_dataset(source, dataset_metadata=dataset_metadata)
         repositories = sorted(data[REPOSITORY_COLUMN].unique().tolist())
         for repository in repositories:
             if repository in source_by_repository:
@@ -99,6 +101,17 @@ def load_multi_repository_datasets(
         paths.append(source)
 
     combined = validate_dataset(pd.concat(frames, ignore_index=True, sort=False))
+    if all(PROVENANCE_KEY in frame.attrs for frame in frames):
+        metadata = verify_feature_metadata(frames[0])
+        metadata.pop("feature_csv_sha256", None)
+        metadata["repositories"] = {
+            name: record
+            for frame in frames
+            for name, record in verify_feature_metadata(frame)["repositories"].items()
+        }
+        combined.attrs[PROVENANCE_KEY] = metadata
+    else:
+        combined.attrs.pop(PROVENANCE_KEY, None)
     repositories = sorted(combined[REPOSITORY_COLUMN].unique().tolist())
     if len(repositories) < 2:
         raise InvalidDatasetError(

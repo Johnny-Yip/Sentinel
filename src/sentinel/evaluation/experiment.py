@@ -175,8 +175,9 @@ def _within_metrics(result: TrainingResult) -> dict[str, Any]:
             for name, model in result.models.items()
         },
         "random_state": result.random_state,
+        "temporal_maturity": result.temporal_audit or {"status": "legacy_unverified"},
         "leakage_controls": {
-            "split": "chronological_distinct_snapshot_dates_70_15_15",
+            "split": result.temporal_audit.get("protocol", "legacy_unverified"),
             "preprocessing": "training_only",
             "threshold_selection": "validation_only",
             "model_selection": "validation_only",
@@ -199,6 +200,9 @@ def evaluate_within_project(
     explain_top_k: int | None = None,
     calibration_bins: int = DEFAULT_CALIBRATION_BINS,
     analysis_thresholds: Sequence[float] | None = None,
+    validation_start: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
     """Run V3 temporal evaluation under the unified V6 report contract."""
@@ -206,7 +210,8 @@ def evaluate_within_project(
         calibration_bins, analysis_thresholds
     )
     result = train_baselines(
-        chronological_split(data),
+        chronological_split(data, validation_start=validation_start,
+                            test_start=test_start, test_end=test_end),
         random_state=random_state,
         progress=progress,
     )
@@ -395,6 +400,9 @@ def evaluate_cross_project(
     explain_top_k: int | None = None,
     calibration_bins: int = DEFAULT_CALIBRATION_BINS,
     analysis_thresholds: Sequence[float] | None = None,
+    validation_start: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
     """Run V4 leave-one-project-out evaluation under the V6 report contract."""
@@ -407,6 +415,7 @@ def evaluate_cross_project(
         same_project_metadata=same_project_metadata,
         progress=progress,
         retain_models=True,
+        validation_start=validation_start, test_start=test_start, test_end=test_end,
     )
     comparison = result.aggregate.copy()
     selected = result.folds.loc[

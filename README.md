@@ -188,9 +188,10 @@ threshold, prints feature signals, and saves the validation-selected model.
 A random row split would mix earlier and later snapshots of the same evolving
 codebase. That would give training access to patterns from the future relative
 to some evaluated rows and produce an unrealistically optimistic estimate.
-V3 instead sorts the distinct snapshot dates and assigns the earliest 70% to
-training, the next 15% to validation, and the final 15% to test. Every row with
-the same `snapshot_date` stays in one partition.
+V3 sorts distinct snapshot dates to choose candidate boundaries at 70% and
+85%. Phase 8 then purges training and validation snapshots whose 90-day labels
+have not matured before the next partition starts. Final retained proportions
+can differ from 70/15/15. Whole repository/date groups are retained or excluded.
 
 Preprocessing and model fitting use only the training period. The validation
 period selects each probabilistic decision threshold by maximum F1 and selects
@@ -238,14 +239,20 @@ The V3 leakage audit passes the following controls:
 - no random splitting is used, and rows sharing a snapshot date remain grouped;
 - all preprocessors and models are fitted on training rows only;
 - validation labels alone select thresholds and the winning model;
-- test labels never influence preprocessing, fitting, threshold selection, or
-  model selection, and test metrics are computed only after selection is locked;
+- test-partition target arrays are read for metrics only after selection is
+  locked; this control does not check overlap between outcome windows;
 - only the historical V2 feature whitelist is passed to sklearn; and
 - the future label, repository/path/date metadata, identifiers, unrecognized
   columns, and future-derived fields are excluded from predictors.
 
 The same audit result and control settings are recorded in each generated
 `metadata.json`.
+
+**Historical results require revalidation:** pre-Phase-8 audits did not check
+outcome-window maturity. The retained commons-lang validation ended 2022-09-30
+before a 2022-10-31 test start, but those validation labels matured only on
+2022-12-29. Phase 8 corrects the code; existing real-data artifacts have not yet
+been regenerated and do not establish prospective temporal performance.
 
 The saved artifact directory contains:
 
@@ -269,17 +276,19 @@ V3's same-project temporal evaluation: V3 learns from earlier snapshots of the
 same codebase, while V4 excludes every row from the target repository until the
 single final held-out evaluation.
 
-V4 uses leave-one-project-out evaluation. For each repository in turn, that
-entire repository is held out. Within every remaining repository, the earliest
-80% of distinct snapshot dates become training data and the latest 20% become
-validation data. Rows sharing a date within a repository always remain
-together. The training portions and validation portions are then concatenated
-separately. Preprocessing and model fitting use only training rows, while
-validation PR-AUC selects the model and validation F1 selects each model's
-threshold. The held-out repository is evaluated once after those choices are
-locked.
+V4 uses leave-one-project-out evaluation. Phase 8 requires one explicit shared
+validation start and test start across repositories and folds. Source training
+labels mature before validation starts; source validation labels mature before
+test starts. Only the held-out repository's eligible test-period rows are scored.
+Training/validation rows from that repository are never used. Model and threshold
+selection objectives remain unchanged. Independent per-repository 80/20 splits
+are no longer accepted as a prospective protocol.
 
 ### Generate multiple repository datasets
+
+Regenerate feature sidecars from the original mining histories before evaluating
+legacy CSVs. All cross-project command examples below require the shared date
+options documented in Phase 8; illustrative dates are not performance-selected.
 
 Mine each public Java repository with V1 and transform it with V2. For example:
 
@@ -316,6 +325,7 @@ training/validation splitting.
 
 ```bash
 sentinel-cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -328,6 +338,7 @@ The equivalent module command is:
 
 ```bash
 python -m sentinel.cross_project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -432,6 +443,7 @@ Run a cross-project evaluation with:
 
 ```bash
 sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -510,6 +522,7 @@ sentinel-evaluate within-project data/commons-lang_features.csv \
   --risk-threshold 0.7
 
 sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -570,6 +583,7 @@ sentinel-evaluate within-project data/commons-lang_features.csv \
   --explain-top-k 5
 
 sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -718,6 +732,7 @@ cross-project/LOPO evaluation:
 
 ```bash
 sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   commons-lang_features.csv \
   commons-io_features.csv \
   --output-dir reports/commons-cross-project \
@@ -856,6 +871,7 @@ temporal test population for that project.
 
 ```bash
 sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -1221,3 +1237,116 @@ Run the full V1 through V6 test suite:
 ```bash
 pytest
 ```
+
+
+## V6 Phase 8 — Temporal Leakage Correction & Final Revalidation
+
+This is a correctness correction. The three baseline models, eight predictors,
+`defect_next_90_days` definition, validation PR-AUC model selection, validation
+F1 threshold selection, explanations, risk ranking, diagnostics, and calibration
+formulas remain unchanged. Real-data V3–V6 results still require revalidation;
+a code audit pass alone is not evidence that V6's empirical results are complete.
+
+### Provenance contract
+
+`sentinel-features` writes the unchanged feature CSV plus
+`<features.csv>.metadata.json`. Schema version 1 records `generator_version`,
+`target`, `horizon_days` (90), `date_convention`, `history_hash_basis`, the exact
+`feature_csv_sha256`, and a `repositories` mapping. Each repository entry has
+`observation_end`, `source_history_sha256`, `feature_frame_sha256`, and `row_count`.
+Observation coverage comes from the latest observed Java change in the supplied
+mining history, never the last feature snapshot. CLI generation hashes the source
+history file; direct library generation hashes its dataframe CSV representation.
+The canonical feature hash binds identities, eight predictors, and labels.
+These hashes bind the supplied evidence; they do not certify the completeness of
+a Git extraction or the correctness of heuristic bug-fix labels.
+
+Training automatically reads adjacent sidecars. `--dataset-metadata PATH` can
+select a sidecar or a manifest:
+
+```json
+{"schema_version": 1, "sidecars": {"owner/alpha": "alpha.csv.metadata.json", "owner/beta": "beta.csv.metadata.json"}}
+```
+
+Paths in a manifest are relative to that manifest. Repositories in the same CSV
+must reference the same sidecar. Missing provenance is loadable for inspection
+but rejected for prospective splitting/training. Incompatible or stale hashes
+are errors. Do not manufacture metadata for old CSVs from their snapshot dates:
+rebuild features from the original history, compare CSVs, and review coverage.
+
+### Mature-label rules
+
+Dates are normalized to UTC calendar days. A snapshot at `t` uses historical
+features through that day and labels events in `(t, t + 90 days]`. Let `V` be
+validation start, `T` test start, `E` test end, and `O[r]` repository coverage.
+
+| Partition | Required eligibility |
+|---|---|
+| Training | `t + 90 days < V` |
+| Validation | `t >= V` and `t + 90 days < T` |
+| Test | `T <= t <= E` and `t + 90 days <= O[r]` |
+
+Equality at the next partition start is excluded: the complete endpoint day
+must have elapsed before that partition starts. The horizon is exactly 90 days,
+including across leap years, never three calendar months. The purge removes
+candidate snapshots in the 90-day interval preceding each next partition.
+No additional post-test embargo is needed for these forward-only folds.
+
+Within-project defaults choose candidate boundaries using the existing distinct
+snapshot-date fractions, then purge without reallocating rows. Optionally supply
+both `--validation-start` and `--test-start`. Cross-project evaluation requires
+both explicitly and applies them globally across every source and held-out fold.
+`--test-end` defaults to `min(O[r]) - 90 days` across supplied repositories;
+an explicit end cannot exceed it. This shared schedule can lose substantial data
+or fail when repository histories do not overlap. It prevents modern source
+history from predicting a held-out project's past. Choose and freeze dates before
+looking at outcomes; the software cannot prove a human did not tune CLI dates.
+
+No boundary shifts depend on scores or class balance. Empty partitions or missing
+required repositories fail with an explanation. Training still requires both
+classes; single-class validation/test behavior follows existing metric rules.
+
+### CLI and audit artifacts
+
+The temporal options are shared by `sentinel-train`, `sentinel-cross-project`,
+and the within/cross-project subcommands of `sentinel-evaluate`:
+
+```bash
+# Set calendar dates for the study before inspecting evaluation outcomes.
+export VALIDATION_START=2020-01-01
+export TEST_START=2021-01-01
+sentinel-evaluate within-project data/alpha_features.csv \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  --output-dir reports/alpha-phase8
+sentinel-evaluate cross-project data/alpha_features.csv data/beta_features.csv \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  --output-dir reports/cross-phase8
+```
+
+The dates above are illustrative and may leave insufficient eligible history.
+The existing 21 V6 artifact names and schemas are retained with additive audit
+metadata in `metrics.json` and a Temporal Maturity Audit in `report.md`. V3
+`metadata.json` and V4 `report.json`/`report.md` also carry the protocol. Audits
+record `mature_labels_v1`, horizon, boundaries, provenance, candidate and retained
+counts, exclusions by repository/reason/date range, partition hashes, and named
+invariant checks. Live partitions are rechecked before fitting. Legacy report
+objects still render but their temporal maturity is explicitly legacy/unverified.
+A same-project comparison is unavailable unless its maturity protocol, calendar
+boundaries, and test evidence match the corresponding cross-project fold.
+Artifact-only Phase 7 analysis remains retrospective and does not upgrade legacy
+evaluation validity or replace validation-selected thresholds.
+
+### Final revalidation gate
+
+After code review, rebuild/verify source-derived metadata, freeze study dates and
+seeds, then rerun V3 models, V4 folds, and dependent V5–V6 reports into new output
+directories. Preserve old results as historical/unverified. Inspect every audit,
+purge count, class count, prediction identity, JSON/CSV/Markdown output, and
+per-project calibration result; repeat fixed-input runs to verify determinism.
+Regenerate model artifacts, performance/selection comparisons, explanations,
+rankings, actions, Phase 6 diagnostics, and Phase 7 summaries derived from the
+old splits. Mining histories and predictor/target definitions need no redesign.
+Do not declare V6 empirically revalidated until those real-data runs and their
+limitations have been reviewed. Repeated snapshots, overlapping test outcome
+windows, heuristic labels, limited projects, and retrospective threshold analysis
+still limit independence, ground-truth validity, and generalization claims.

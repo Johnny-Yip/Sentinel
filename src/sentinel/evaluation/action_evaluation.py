@@ -120,7 +120,12 @@ def _timestamp(value: Any) -> pd.Timestamp | None:
     text = _text(value)
     if text is None:
         return None
-    parsed = pd.to_datetime(text, utc=True, errors="coerce")
+    # Artifact dates are canonical ISO dates. Avoid repeated format inference
+    # for each feature-level evidence row while preserving other input formats.
+    date_format = (
+        "%Y-%m-%d" if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", text) else None
+    )
+    parsed = pd.to_datetime(text, format=date_format, utc=True, errors="coerce")
     return None if pd.isna(parsed) else parsed
 
 

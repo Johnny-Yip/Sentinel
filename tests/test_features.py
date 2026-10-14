@@ -190,10 +190,11 @@ def test_future_changes_do_not_leak_into_features() -> None:
     with_future_fix = build_file_snapshots(make_history(include_future_bug_fix=True))
     without_future_fix = build_file_snapshots(make_history(include_future_bug_fix=False))
 
-    selector = lambda frame: frame.loc[
-        (frame["file_path"] == "src/A.java")
-        & (frame["snapshot_date"] == "2024-01-31")
-    ].reset_index(drop=True)
+    def selector(frame):
+        return frame.loc[
+            (frame["file_path"] == "src/A.java")
+            & (frame["snapshot_date"] == "2024-01-31")
+        ].reset_index(drop=True)
     future_snapshot = selector(with_future_fix)
     baseline_snapshot = selector(without_future_fix)
 

@@ -18,6 +18,7 @@ from sentinel.cross_project.reporting import (
 )
 from sentinel.ml.data import MLError
 from sentinel.ml.models import DEFAULT_RANDOM_STATE
+from sentinel.ml.cli import add_temporal_options, temporal_options
 
 
 def _non_negative_integer(value: str) -> int:
@@ -39,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="V2 feature CSVs containing at least two distinct repositories",
     )
+    add_temporal_options(parser)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -67,7 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         print("Loading and validating cross-project feature datasets...")
-        dataset = load_multi_repository_datasets(args.feature_csvs)
+        dataset = load_multi_repository_datasets(args.feature_csvs, dataset_metadata=args.dataset_metadata)
         print(
             f"Validated {len(dataset.data):,} snapshots from "
             f"{len(dataset.summaries)} repositories with "
@@ -79,6 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             same_project_metadata=args.same_project_metadata,
             progress=print,
             retain_models=False,
+            **temporal_options(args),
         )
         print_repository_summaries(result)
         print_cross_project_report(result)

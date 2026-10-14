@@ -19,6 +19,7 @@ from sentinel.evaluation.reporting import save_evaluation_report, save_risk_cali
 from sentinel.evaluation.risk import DEFAULT_RISK_THRESHOLD, DEFAULT_TOP_RISK
 from sentinel.ml.data import MLError, load_dataset
 from sentinel.ml.models import DEFAULT_RANDOM_STATE
+from sentinel.ml.cli import add_temporal_options, temporal_options
 
 
 def _non_negative_integer(value: str) -> int:
@@ -43,6 +44,7 @@ def _unit_interval(value: str) -> float:
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
+    add_temporal_options(parser)
     _add_calibration_options(parser)
     parser.add_argument(
         "--output-dir",
@@ -155,7 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             paths = save_risk_calibration(result, output_dir)
         elif args.experiment_type == "within-project":
             print(f"Loading and validating {args.feature_csv}...")
-            data = load_dataset(args.feature_csv)
+            data = load_dataset(args.feature_csv, dataset_metadata=args.dataset_metadata)
             report = evaluate_within_project(
                 data,
                 random_state=args.random_state,
@@ -165,10 +167,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 calibration_bins=args.calibration_bins,
                 analysis_thresholds=args.analysis_thresholds,
                 progress=print,
+                **temporal_options(args),
             )
         else:
             print("Loading and validating cross-project datasets...")
-            dataset = load_multi_repository_datasets(args.feature_csvs)
+            dataset = load_multi_repository_datasets(args.feature_csvs, dataset_metadata=args.dataset_metadata)
             report = evaluate_cross_project(
                 dataset,
                 random_state=args.random_state,
@@ -179,6 +182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 calibration_bins=args.calibration_bins,
                 analysis_thresholds=args.analysis_thresholds,
                 progress=print,
+                **temporal_options(args),
             )
         if args.experiment_type != "calibrate":
             paths = save_evaluation_report(report, output_dir)

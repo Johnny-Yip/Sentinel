@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from temporal_fixtures import write_fixture
 
 from sentinel.cross_project.data import load_multi_repository_datasets
 from sentinel.evaluation.cli import main
@@ -73,7 +74,7 @@ class DecisionClassifier:
 
 def make_feature_data(repository: str, *, offset: int = 0) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
-    dates = pd.date_range("2021-01-31", periods=12, freq="ME")
+    dates = pd.date_range("2021-01-31", periods=36, freq="ME")
     for date_index, snapshot_date in enumerate(dates):
         for file_index in range(4):
             commit_count = date_index + file_index + offset + 1
@@ -204,6 +205,14 @@ def assert_phase6_artifacts(destination: Path, projects: set[str]) -> None:
         (destination / "explanation_action_evaluation.json").read_text(),
         parse_constant=reject_constant,
     )
+    metrics = json.loads((destination / "metrics.json").read_text(), parse_constant=lambda value: pytest.fail(value))
+    assert "Temporal Maturity Audit" in (destination / "report.md").read_text()
+    if "temporal_maturity" in metrics:
+        assert metrics["temporal_maturity"]["status"] == "passed"
+    elif "leakage_audit" in metrics:
+        assert all(audit["temporal_maturity"]["status"] == "passed" for audit in metrics["leakage_audit"]["folds"].values())
+    else:
+        assert "legacy/unverified" in (destination / "report.md").read_text()
     ranking = pd.read_csv(destination / "risk_ranking.csv")
     explanations = pd.read_csv(destination / "prediction_explanations.csv")
     actions = pd.read_csv(destination / "developer_actions.csv")
@@ -407,7 +416,7 @@ def test_within_project_cli_creates_complete_report(
     tmp_path: Path, capsys
 ) -> None:
     source = tmp_path / "example_features.csv"
-    make_feature_data("owner/example").to_csv(source, index=False)
+    write_fixture(make_feature_data("owner/example"), source)
     destination = tmp_path / "within-report"
 
     exit_code = main(
@@ -440,6 +449,14 @@ def test_within_project_cli_creates_complete_report(
     assert {path.name for path in destination.iterdir()} == set(
         REPORT_FILENAMES.values()
     )
+    metrics = json.loads((destination / "metrics.json").read_text(), parse_constant=lambda value: pytest.fail(value))
+    assert "Temporal Maturity Audit" in (destination / "report.md").read_text()
+    if "temporal_maturity" in metrics:
+        assert metrics["temporal_maturity"]["status"] == "passed"
+    elif "leakage_audit" in metrics:
+        assert all(audit["temporal_maturity"]["status"] == "passed" for audit in metrics["leakage_audit"]["folds"].values())
+    else:
+        assert "legacy/unverified" in (destination / "report.md").read_text()
     ranking = pd.read_csv(destination / "risk_ranking.csv")
     summary = json.loads((destination / "risk_summary.json").read_text())
     assert summary["total_samples"] == len(ranking)
@@ -488,37 +505,35 @@ def test_cross_project_adapter_uses_same_report_contract(tmp_path: Path) -> None
     sources: list[Path] = []
     for index, repository in enumerate(("owner/alpha", "owner/beta")):
         source = tmp_path / f"project-{index}.csv"
-        make_feature_data(repository, offset=index).to_csv(source, index=False)
+        write_fixture(make_feature_data(repository, offset=index), source)
         sources.append(source)
     dataset = load_multi_repository_datasets(sources)
 
-    report = evaluate_cross_project(dataset, random_state=13)
+    report = evaluate_cross_project(dataset, random_state=13, validation_start="2022-07-01", test_start="2023-07-01")
 
     assert report.experiment_type == "cross_project"
     assert report.risk_calibration is not None
     assert report.risk_calibration.artifact["analysis_scope"] == "per_project"
-    assert sum(project["valid_samples"] for project in report.risk_calibration.artifact["projects"]) == len(dataset.data)
+    assert sum(project["valid_samples"] for project in report.risk_calibration.artifact["projects"]) == 48
     assert set(report.model_comparison["model"]) == {
         "dummy",
         "logistic_regression",
         "random_forest",
     }
     assert "mean_accuracy" in report.model_comparison
-    assert report.confusion_matrix.sum() == len(dataset.data)
+    assert report.confusion_matrix.sum() == 48
     assert set(report.feature_importance["model"]) == set(
         report.model_comparison["model"]
     )
-    assert len(report.risk_ranking) == len(dataset.data)
+    assert len(report.risk_ranking) == 48
     assert set(report.risk_ranking["project"]) == {"owner/alpha", "owner/beta"}
     assert report.risk_ranking["rank"].tolist() == list(
-        range(1, len(dataset.data) + 1)
+        range(1, 48 + 1)
     )
     assert report.risk_ranking["risk_score"].between(0, 1).all()
-    assert len(report.prediction_explanations) == len(dataset.data) * 8
-    assert report.explanation_summary["total_explained_samples"] == len(
-        dataset.data
-    )
-    assert report.actionable_insights["total_samples"] == len(dataset.data)
+    assert len(report.prediction_explanations) == 48 * 8
+    assert report.explanation_summary["total_explained_samples"] == 48
+    assert report.actionable_insights["total_samples"] == 48
     assert report.project_intelligence["summary"]["analysis_scope"] == (
         "per_project"
     )
@@ -541,13 +556,15 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     sources: list[Path] = []
     for index, repository in enumerate(("owner/alpha", "owner/beta")):
         source = tmp_path / f"cli-project-{index}.csv"
-        make_feature_data(repository, offset=index).to_csv(source, index=False)
+        write_fixture(make_feature_data(repository, offset=index), source)
         sources.append(source)
     destination = tmp_path / "cross-report"
 
     exit_code = main(
         [
             "cross-project",
+            "--validation-start", "2022-07-01",
+            "--test-start", "2023-07-01",
             *(str(source) for source in sources),
             "--output-dir",
             str(destination),
@@ -560,6 +577,14 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert "V6 report directory" in captured.out
     assert captured.err == ""
+    metrics = json.loads((destination / "metrics.json").read_text(), parse_constant=lambda value: pytest.fail(value))
+    assert "Temporal Maturity Audit" in (destination / "report.md").read_text()
+    if "temporal_maturity" in metrics:
+        assert metrics["temporal_maturity"]["status"] == "passed"
+    elif "leakage_audit" in metrics:
+        assert all(audit["temporal_maturity"]["status"] == "passed" for audit in metrics["leakage_audit"]["folds"].values())
+    else:
+        assert "legacy/unverified" in (destination / "report.md").read_text()
     ranking = pd.read_csv(destination / "risk_ranking.csv")
     summary = json.loads((destination / "risk_summary.json").read_text())
     explanations = pd.read_csv(destination / "prediction_explanations.csv")
@@ -573,8 +598,8 @@ def test_cross_project_cli_creates_risk_outputs(tmp_path: Path, capsys) -> None:
         (destination / "project_intelligence.json").read_text()
     )
     priority = pd.read_csv(destination / "developer_priority.csv")
-    assert len(ranking) == 96
-    assert summary["total_samples"] == 96
+    assert len(ranking) == 48
+    assert summary["total_samples"] == 48
     assert summary["model_metadata"]["evaluation_mode"] == (
         "cross_project_held_out_folds"
     )

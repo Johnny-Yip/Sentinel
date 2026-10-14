@@ -29,6 +29,7 @@ from sentinel.ml.data import (
 from sentinel.ml.evaluation import DEFAULT_THRESHOLD
 from sentinel.ml.models import MODEL_ORDER
 from sentinel.ml.training import TrainingResult, train_baselines
+from sentinel.ml.temporal import TEMPORAL_PROTOCOL, audit_mature_partitions
 
 
 ProgressCallback = Callable[[str], None]
@@ -297,6 +298,9 @@ def _audit_fold(
     fold: CrossProjectFold,
     result: TrainingResult,
 ) -> dict[str, Any]:
+    temporal_audit = audit_mature_partitions(
+        dict(fold.as_temporal_splits().frames()), fold.temporal_context
+    )
     expected_training = set(fold.training_repositories)
     train_repositories = set(fold.train[REPOSITORY_COLUMN].unique())
     validation_repositories = set(fold.validation[REPOSITORY_COLUMN].unique())
@@ -318,12 +322,6 @@ def _audit_fold(
             date_grouping_passed = False
 
     predictor_set = set(result.feature_columns)
-    forbidden = {
-        REPOSITORY_COLUMN,
-        PATH_COLUMN,
-        DATE_COLUMN,
-        TARGET_COLUMN,
-    }
     future_derived = sorted(
         column
         for column in fold.train.columns
@@ -340,6 +338,7 @@ def _audit_fold(
     preprocessing_row_count_matches = int(scaler.n_samples_seen_) == len(fold.train)
 
     checks = {
+        "temporal_label_maturity": temporal_audit["status"] == "passed",
         "held_out_absent_from_training": fold.held_out_repository
         not in train_repositories,
         "held_out_absent_from_validation": fold.held_out_repository
@@ -371,6 +370,7 @@ def _audit_fold(
     }
     return {
         "status": "passed" if all(checks.values()) else "failed",
+        "temporal_maturity": temporal_audit,
         "checks": checks,
         "feature_columns": list(result.feature_columns),
         "metadata_columns_excluded": list(METADATA_COLUMNS),
@@ -390,6 +390,7 @@ def _json_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
 def _same_project_comparison(
     metadata_path: str | Path | None,
     folds: pd.DataFrame,
+    evaluations: Sequence[FoldEvaluation] = (),
 ) -> dict[str, Any]:
     if metadata_path is None:
         return {"available": False, "reason": "same-project metadata not supplied"}
@@ -407,6 +408,14 @@ def _same_project_comparison(
             f"Could not read same-project metadata {source}: {exc}"
         ) from exc
 
+    if not isinstance(metadata, dict):
+        return {"available": False, "reason": "same-project metadata is legacy/unverified"}
+    audit = metadata.get("leakage_audit")
+    temporal = audit.get("temporal_maturity") if isinstance(audit, dict) else None
+    temporal = temporal if isinstance(temporal, dict) else {}
+    if temporal.get("protocol") != TEMPORAL_PROTOCOL or temporal.get("status") != "passed":
+        return {"available": False, "reason": "same-project metadata is legacy/unverified; mature-label protocol required"}
+
     commons_repositories = sorted(
         repository
         for repository in folds["held_out_repository"].unique()
@@ -420,6 +429,11 @@ def _same_project_comparison(
         }
 
     held_out = commons_repositories[0]
+    context = next((item.fold.temporal_context for item in evaluations if item.fold.held_out_repository == held_out), None)
+    if not context or any(temporal.get(key) != context.get(key) for key in (
+        "protocol", "horizon_days", "validation_start", "test_start", "test_end",
+    )) or temporal.get("partition_sha256", {}).get("test") != context.get("partition_sha256", {}).get("test"):
+        return {"available": False, "reason": "same-project and cross-project schedules or evaluated populations are incompatible"}
     comparisons: dict[str, Any] = {}
     for label, model_name in (
         ("logistic_regression", "logistic_regression"),
@@ -466,6 +480,7 @@ def _same_project_comparison(
 
     return {
         "available": bool(comparisons),
+        "reason": None if comparisons else "no compatible same-project model metrics were available",
         "repository": held_out,
         "metadata_path": str(source),
         "comparisons": comparisons,
@@ -537,6 +552,7 @@ def _generalization_interpretation(
 def _fold_definition(evaluation: FoldEvaluation) -> dict[str, Any]:
     fold = evaluation.fold
     return {
+        "temporal_maturity": evaluation.leakage_audit["temporal_maturity"],
         "held_out_repository": fold.held_out_repository,
         "training_repositories": list(fold.training_repositories),
         "training_rows": len(fold.train),
@@ -557,9 +573,15 @@ def run_cross_project_evaluation(
     same_project_metadata: str | Path | None = None,
     progress: ProgressCallback | None = None,
     retain_models: bool = True,
+    validation_start: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
 ) -> CrossProjectResult:
     """Execute all leave-one-project-out folds and build aggregate analyses."""
-    folds = build_leave_one_project_out_folds(dataset.data)
+    folds = build_leave_one_project_out_folds(
+        dataset.data, validation_start=validation_start, test_start=test_start,
+        test_end=test_end,
+    )
     evaluations: list[FoldEvaluation] = []
     metric_rows: list[dict[str, Any]] = []
     model_selection: list[dict[str, Any]] = []
@@ -634,7 +656,7 @@ def run_cross_project_evaluation(
     importance_stability = _feature_importance_stability(importance_rows)
     model_feature_importance = pd.DataFrame(model_importance_rows)
     dataset_shift = _dataset_shift(evaluations)
-    same_project = _same_project_comparison(same_project_metadata, folds_frame)
+    same_project = _same_project_comparison(same_project_metadata, folds_frame, evaluations)
     interpretation = _generalization_interpretation(
         folds_frame, aggregate, same_project
     )
@@ -646,10 +668,7 @@ def run_cross_project_evaluation(
         "sentinel_version": __version__,
         "experiment": "leave_one_project_out",
         "random_state": random_state,
-        "validation_strategy": (
-            "per_training_repository_earliest_80_percent_dates_train_"
-            "latest_20_percent_dates_validation"
-        ),
+        "validation_strategy": "mature_labels_v1_shared_calendar_LOPO",
         "selection_metric": "validation_pr_auc",
         "threshold_metric": "validation_f1",
         "feature_columns": list(dataset.feature_columns),

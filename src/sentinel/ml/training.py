@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from sentinel.ml.evaluation import (
 )
 from sentinel.ml.models import DEFAULT_RANDOM_STATE, MODEL_ORDER, build_model_pipelines
 from sentinel.ml.splitting import TemporalSplits
+from sentinel.ml.temporal import audit_mature_partitions
 
 
 ProgressCallback = Callable[[str], None]
@@ -59,6 +60,7 @@ class TrainingResult:
     models: dict[str, ModelResult]
     best_model_name: str
     random_state: int
+    temporal_audit: dict[str, Any] = field(default_factory=dict)
 
     @property
     def best_model(self) -> ModelResult:
@@ -130,7 +132,10 @@ def train_baselines(
     progress: ProgressCallback | None = None,
 ) -> TrainingResult:
     """Fit on training only, tune thresholds on validation, then score test once."""
+    temporal_audit = audit_mature_partitions(dict(splits.frames()), splits.temporal_context)
     feature_columns = list(feature_columns)
+    if feature_columns != MODEL_FEATURE_COLUMNS:
+        raise InvalidDatasetError("Prospective training requires the eight historical predictor whitelist.")
     train_classes = set(splits.train[TARGET_COLUMN].unique())
     if train_classes != {0, 1}:
         raise InvalidDatasetError(
@@ -218,6 +223,7 @@ def train_baselines(
         models=validation_results,
         best_model_name=best_model_name,
         random_state=random_state,
+        temporal_audit=temporal_audit,
     )
 
 
@@ -245,8 +251,9 @@ def build_metadata(result: TrainingResult) -> dict[str, Any]:
         "random_state": result.random_state,
         "selected_threshold": best.selected_threshold,
         "leakage_audit": {
-            "status": "passed",
-            "split_strategy": "chronological_distinct_snapshot_dates_70_15_15",
+            "status": result.temporal_audit.get("status", "legacy_unverified"),
+            "split_strategy": result.temporal_audit.get("protocol", "legacy_unverified"),
+            "temporal_maturity": result.temporal_audit or {"status": "legacy_unverified"},
             "same_date_rows_grouped": True,
             "preprocessing_fit_scope": "training_only",
             "threshold_selection_scope": "validation_only",

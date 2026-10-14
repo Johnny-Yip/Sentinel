@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sentinel.ml.temporal import temporal_markdown_lines
 
 from sentinel.evaluation.action_evaluation import (
     ACTION_QUALITY_COLUMNS,
@@ -506,6 +507,13 @@ def build_markdown_report(
         ),
         "",
     ]
+    lines.extend(["## Temporal Maturity Audit", ""])
+    fold_audits = report.metrics.get("leakage_audit", {}).get("folds", {})
+    if fold_audits:
+        for project, audit in fold_audits.items():
+            lines.extend([f"### {project}", "", *temporal_markdown_lines(audit.get("temporal_maturity"))])
+    else:
+        lines.extend(temporal_markdown_lines(report.metrics.get("temporal_maturity")))
     lines.extend(calibration_markdown_lines(
         calibration_summary if calibration_summary is not None
         else _resolved_calibration(report).artifact

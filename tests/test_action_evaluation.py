@@ -10,10 +10,52 @@ import pytest
 from sentinel.evaluation.action_evaluation import (
     ACTION_EVALUATION_SCHEMA_VERSION,
     ACTION_QUALITY_COLUMNS,
+    _timestamp,
     build_action_evaluation,
 )
 from sentinel.evaluation.decision_brief import DEVELOPER_ACTION_COLUMNS
 from sentinel.evaluation.explain import EXPLANATION_COLUMNS
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2024-02-29", "2024-02-29T00:00:00Z"),
+        (" 2024-02-29 ", "2024-02-29T00:00:00Z"),
+        ("2023-02-29", None),
+        ("2024-13-01", None),
+        ("9999-01-01", None),
+        ("2024/02/29", "2024-02-29T00:00:00Z"),
+        ("February 29, 2024", "2024-02-29T00:00:00Z"),
+        ("2024-02-29T23:00:00-05:00", "2024-03-01T04:00:00Z"),
+        (pd.Timestamp("2024-02-29", tz="UTC"), "2024-02-29T00:00:00Z"),
+        ("not a date", None),
+        (None, None),
+        (pd.NaT, None),
+    ],
+)
+def test_diagnostic_timestamp_preserves_dates_fallback_and_missing_values(
+    value, expected
+) -> None:
+    result = _timestamp(value)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pd.Timestamp(expected)
+
+
+def test_canonical_diagnostic_dates_skip_format_inference(monkeypatch) -> None:
+    original = pd.to_datetime
+    formats = []
+
+    def recording_parser(value, **kwargs):
+        formats.append(kwargs.get("format"))
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(pd, "to_datetime", recording_parser)
+    assert _timestamp("2024-02-29") == pd.Timestamp("2024-02-29", tz="UTC")
+    assert _timestamp("February 29, 2024") == pd.Timestamp("2024-02-29", tz="UTC")
+    assert formats == ["%Y-%m-%d", None]
 
 
 def _ranking(
