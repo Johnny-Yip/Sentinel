@@ -4,11 +4,46 @@ Sentinel is a machine-learning software engineering project intended to predict
 which Java source files are most likely to be involved in future defects. V6
 adds snapshot-level defect-risk scoring, individual prediction explanations,
 actionable developer inspection guidance, project-level risk intelligence,
-diagnostic explanation/action evaluation, and risk calibration/threshold analysis
+diagnostic explanation/action evaluation, risk calibration/threshold analysis,
+and Phase 8 provenance-bound, maturity-safe temporal evaluation
 to V5's unified evaluation and experiment reports. It builds on
 the V1 repository miner, V2 leakage-safe feature pipeline, V3 reproducible
 sklearn baselines, and V4 cross-project evaluation. It does not expose an
 application service or UI.
+
+## V6 completion status
+
+Sentinel **0.6.0** implements V6 Phases 1–8. The final architecture keeps mining
+and feature generation separate from the centralized sklearn baselines, then
+adds report adapters and deterministic risk-intelligence layers. Within-project
+and cross-project evaluation share the same training, metrics, predictor
+whitelist, and maturity checks; downstream explanations, guidance, diagnostics,
+and calibration do not change the fitted model or its selected threshold.
+
+| Phase | Completed capability | Implementation |
+|---|---|---|
+| 1 | Snapshot risk scores and deterministic ranking | `evaluation/risk.py` |
+| 2 | Individual linear, tree-path, and fallback explanations | `evaluation/explain.py` |
+| 3 | Feature-based developer inspection guidance | `evaluation/insights.py` |
+| 4 | Project risk concentration, hotspots, trends, and priorities | `evaluation/project_intelligence.py` |
+| 5 | Unified developer brief and project-local action queue | `evaluation/decision_brief.py` |
+| 6 | Explanation stability, evidence, specificity, and alignment diagnostics | `evaluation/action_evaluation.py` |
+| 7 | Per-project calibration and retrospective threshold analysis | `evaluation/calibration.py` |
+| 8 | Hash-bound provenance, 90-day label maturity, shared-calendar LOPO, and final revalidation | `provenance.py`, `ml/temporal.py`, and split/report layers |
+
+Implementation paths are relative to `src/sentinel/`. Each unified evaluation
+writes **21 artifacts**, retaining the V5 report contract and adding the V6
+outputs documented below.
+
+Phase 8 revalidation is complete for the retained monthly commons-lang
+within-project study and bounded quarterly four-project LOPO study. Their
+historical forward evaluation protocol passes the corrected maturity checks;
+this is not a live prospective trial or a universal generalization claim.
+Pre-Phase-8 results remain historical/unverified. See the
+[V6 release summary](V6_RELEASE_SUMMARY.md) for the frozen schedules, results,
+verification scope, reproducibility requirements, and remaining limitations.
+Raw histories, generated datasets, and experiment directories are ignored by
+Git and are not distributed with this source repository.
 
 ## Pipeline
 
@@ -95,6 +130,10 @@ python -m sentinel.features \
   commons-lang_java_history.csv \
   --output data/commons-lang_features.csv
 ```
+
+The command also writes `<features.csv>.metadata.json`, binding the feature CSV
+to its source history and observation coverage. Keep this sidecar with the CSV;
+training and evaluation require verified provenance (see Phase 8).
 
 The command reports the number of snapshots, unique Java file paths, positive
 and negative labels, the positive-label percentage, and the output location.
@@ -200,8 +239,9 @@ those choices are locked.
 
 ### Why PR-AUC matters
 
-Only about 1.97% of the current commons-lang snapshots are positive. A model
-that predicts every snapshot as negative would therefore be about 98% accurate
+Only about 1.97% of the retained full monthly commons-lang dataset is positive;
+prevalence varies by partition and project. A model that predicts every snapshot
+as negative would therefore be about 98% accurate on that full population
 while finding no future bug-fix events. Accuracy is not reported as the primary
 metric. Sentinel emphasizes PR-AUC (Average Precision), which summarizes the
 precision/recall tradeoff for the rare positive class, while also reporting:
@@ -239,8 +279,12 @@ The V3 leakage audit passes the following controls:
 - no random splitting is used, and rows sharing a snapshot date remain grouped;
 - all preprocessors and models are fitted on training rows only;
 - validation labels alone select thresholds and the winning model;
-- test-partition target arrays are read for metrics only after selection is
-  locked; this control does not check overlap between outcome windows;
+- model and threshold selection are locked before test scoring; the pre-fit
+  structural audit checks test labels for validity and observation coverage
+  without using them to select models or thresholds;
+- training labels mature strictly before validation starts, validation labels
+  mature strictly before testing starts, and test labels are fully observed;
+- source-history coverage and feature identities are bound by verified hashes;
 - only the historical V2 feature whitelist is passed to sklearn; and
 - the future label, repository/path/date metadata, identifiers, unrecognized
   columns, and future-derived fields are excluded from predictors.
@@ -248,11 +292,13 @@ The V3 leakage audit passes the following controls:
 The same audit result and control settings are recorded in each generated
 `metadata.json`.
 
-**Historical results require revalidation:** pre-Phase-8 audits did not check
-outcome-window maturity. The retained commons-lang validation ended 2022-09-30
-before a 2022-10-31 test start, but those validation labels matured only on
-2022-12-29. Phase 8 corrects the code; existing real-data artifacts have not yet
-been regenerated and do not establish prospective temporal performance.
+**Historical results were superseded:** pre-Phase-8 audits did not check
+outcome-window maturity. The old commons-lang validation ended 2022-09-30
+before a 2022-10-31 test start, although those labels matured on 2022-12-29.
+Phase 8 purged 3,583 training and 2,720 validation snapshots and regenerated
+the dependent V5–V6 reports. The retained test population stayed unchanged.
+Only the corrected Phase 8 study supports the historical forward-protocol
+claims in the [release summary](V6_RELEASE_SUMMARY.md).
 
 The saved artifact directory contains:
 
@@ -323,6 +369,15 @@ training/validation splitting.
 
 ### Run leave-one-project-out evaluation
 
+Define and freeze shared dates before inspecting outcomes. These illustrative
+dates require sufficient overlapping history and are not the retained Phase 8
+study schedule:
+
+```bash
+export VALIDATION_START=2020-01-01
+export TEST_START=2021-01-01
+```
+
 ```bash
 sentinel-cross-project \
   --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
@@ -392,10 +447,13 @@ aggregated across folds. Dataset shift compares training-repository and
 held-out medians/IQRs for every predictor and includes an optional robust median
 shift in training-IQR units.
 
-When `artifacts/commons-lang/metadata.json` is present, V4 also compares its
-commons-lang held-out Logistic Regression metrics with the recorded V3
-same-project test metrics. The comparison reports PR-AUC, F1, and ROC-AUC
-differences without using V3 data for V4 fitting or selection.
+When supplied with `--same-project-metadata`, V4 can compare held-out
+Logistic Regression metrics with recorded V3 same-project test metrics. The
+comparison requires matching maturity protocols, calendar boundaries, and
+test-partition evidence; otherwise it is explicitly unavailable. It reports
+PR-AUC, F1, and ROC-AUC differences without using V3 data for V4 fitting or
+selection. The retained monthly within-project and quarterly LOPO studies
+are different populations and do not establish this matched comparison.
 
 The V4 artifact directory is separate from V3 and contains:
 
@@ -422,7 +480,8 @@ The dedicated V4 leakage audit must pass for artifacts to be produced. It checks
 repository disjointness, per-repository date grouping, the historical feature
 whitelist, metadata/label/future-field exclusion, train-only preprocessing,
 validation-only threshold and model selection, and final-evaluation-only use of
-held-out labels.
+held-out labels. It also verifies shared calendar boundaries, hash-bound
+provenance, complete test observation, and label maturity before fitting.
 
 ## V5: unified evaluation and reporting
 
@@ -538,9 +597,9 @@ so that the pooled ranking remains auditable.
 ## V6 Phase 2: individual prediction explanations
 
 Phase 2 explains every sample in the final evaluation population: the temporal
-test split for within-project evaluation and every held-out repository row for
-cross-project evaluation. This is local explanation, which answers why the
-selected fitted model assigned one snapshot its risk score. It differs from
+test split for within-project evaluation and each held-out repository's eligible
+test-period rows for cross-project evaluation. This is local explanation, which
+answers why the selected fitted model assigned one snapshot its risk score. It differs from
 `feature_importance.csv`, which summarizes a feature's overall model-level
 importance and cannot explain a particular prediction.
 
@@ -557,9 +616,10 @@ A positive contribution (`increases_risk`) pushes the prediction toward higher
 defect risk relative to that method's baseline; a negative contribution
 (`decreases_risk`) is protective; an exact zero is `neutral`. Raw contribution
 units differ by method and should not be compared across model families.
-`normalized_contribution` is the feature's share of the sample's total absolute
-contribution magnitude, so non-zero shares sum to approximately `1` for each
-sample. `feature_value` is the raw value when preprocessing is one-to-one, and
+`normalized_contribution` is the feature's share of the sample's retained
+absolute contribution magnitude, so non-zero shares sum to approximately `1`
+for each sample. With `--explain-top-k`, detailed rows are renormalized over the
+retained features; guidance still uses the full explanation set. `feature_value` is the raw value when preprocessing is one-to-one, and
 `model_input_value` records the actual transformed value used by the model.
 
 Both `sentinel-evaluate` modes now also generate:
@@ -1244,8 +1304,10 @@ pytest
 This is a correctness correction. The three baseline models, eight predictors,
 `defect_next_90_days` definition, validation PR-AUC model selection, validation
 F1 threshold selection, explanations, risk ranking, diagnostics, and calibration
-formulas remain unchanged. Real-data V3–V6 results still require revalidation;
-a code audit pass alone is not evidence that V6's empirical results are complete.
+formulas remain unchanged. The retained monthly within-project and bounded
+quarterly LOPO studies have been revalidated, with all dependent V5–V6 outputs
+regenerated. The evidence and its limits are summarized below; a code audit
+alone does not establish experimental performance.
 
 ### Provenance contract
 
@@ -1336,17 +1398,41 @@ boundaries, and test evidence match the corresponding cross-project fold.
 Artifact-only Phase 7 analysis remains retrospective and does not upgrade legacy
 evaluation validity or replace validation-selected thresholds.
 
-### Final revalidation gate
+### Completed final revalidation
 
-After code review, rebuild/verify source-derived metadata, freeze study dates and
-seeds, then rerun V3 models, V4 folds, and dependent V5–V6 reports into new output
-directories. Preserve old results as historical/unverified. Inspect every audit,
-purge count, class count, prediction identity, JSON/CSV/Markdown output, and
-per-project calibration result; repeat fixed-input runs to verify determinism.
-Regenerate model artifacts, performance/selection comparisons, explanations,
-rankings, actions, Phase 6 diagnostics, and Phase 7 summaries derived from the
-old splits. Mining histories and predictor/target definitions need no redesign.
-Do not declare V6 empirically revalidated until those real-data runs and their
-limitations have been reviewed. Repeated snapshots, overlapping test outcome
-windows, heuristic labels, limited projects, and retrospective threshold analysis
+The retained real-data runs use seed 42 and unchanged model configurations.
+Within-project commons-lang uses validation start `2019-03-31` and test start
+`2022-10-31`, retaining 152,016 training, 51,942 validation, and 62,008 test
+snapshots after purging 6,303 immature labels. The four-project LOPO study uses
+quarter-end inputs from `2023-06-30` through `2026-03-31`, shared validation
+start `2025-09-30`, and test dates `2025-12-31` through `2026-03-31`. Its four
+held-out test populations total 12,920 snapshots. All five evaluations selected
+Logistic Regression by validation PR-AUC.
+
+Both output directories contain the complete 21-artifact V6 report. The final
+release audit recomputed all five partitions and maturity checks from the
+retained CSVs/sidecars, matched test identities and labels, checked reported
+classification metrics and confusion matrices, verified deterministic ranking,
+and reproduced all six calibration outputs byte-for-byte. Source-history hashes
+and observation endpoints match the retained histories. The original Phase 8
+record also documents byte-identical feature regeneration and reconstruction
+of 404 sampled snapshots. See [V6_RELEASE_SUMMARY.md](V6_RELEASE_SUMMARY.md)
+for measured results and the distinction between retained evidence and fresh
+checks. Full real-data model fitting was not repeated during release preparation.
+
+The local evidence is under `artifacts/v6-phase8-revalidation/`, including
+`REVALIDATION_REPORT.md`, `protocol.json`, `environment.json`, `datasets.json`,
+`preflight.json`, `populations.json`, `history-reconstruction.json`,
+`artifact-verification.json`, `comparison.json`, and
+`calibration-reproducibility.json`. This directory is intentionally ignored;
+a fresh clone contains the source, tests, and documented summary, not these
+experimental inputs or results. Reproducing exact numbers requires the same
+hash-identified mining histories and software environment; mining current GitHub
+HEAD can produce different data.
+
+Calibration remains imperfect and validation-selected thresholds remain
+project-sensitive. JUnit4 has no positive labels in its frozen test period, so
+ROC-AUC, PR-AUC, and a retrospective threshold recommendation are unavailable.
+Repeated snapshots, overlapping test outcome windows, heuristic labels,
+lifecycle limitations, limited projects, and retrospective threshold analysis
 still limit independence, ground-truth validity, and generalization claims.
