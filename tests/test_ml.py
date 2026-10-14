@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
+from temporal_fixtures import attest
 
 from sentinel.ml.cli import main
 from sentinel.ml.data import (
@@ -21,7 +22,7 @@ from sentinel.ml.splitting import chronological_split
 from sentinel.ml.training import save_artifacts, train_baselines
 
 
-def make_feature_data(date_count: int = 20, files_per_date: int = 4) -> pd.DataFrame:
+def make_feature_data(date_count: int = 36, files_per_date: int = 4) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     dates = pd.date_range("2020-01-31", periods=date_count, freq="ME")
     for date_index, snapshot_date in enumerate(dates):
@@ -54,7 +55,7 @@ def make_feature_data(date_count: int = 20, files_per_date: int = 4) -> pd.DataF
 
 @pytest.fixture(scope="module")
 def validated_data() -> pd.DataFrame:
-    return validate_dataset(make_feature_data())
+    return attest(validate_dataset(make_feature_data()))
 
 
 @pytest.fixture(scope="module")
@@ -108,9 +109,9 @@ def test_chronological_split_uses_date_groups(validated_data) -> None:
     validation_dates = set(splits.validation["snapshot_date"])
     test_dates = set(splits.test["snapshot_date"])
 
-    assert len(train_dates) == 14
+    assert len(train_dates) == 22
     assert len(validation_dates) == 3
-    assert len(test_dates) == 3
+    assert len(test_dates) == 6
     assert max(train_dates) < min(validation_dates) < min(test_dates)
     assert train_dates.isdisjoint(validation_dates | test_dates)
     assert validation_dates.isdisjoint(test_dates)
@@ -120,7 +121,7 @@ def test_chronological_split_uses_date_groups(validated_data) -> None:
             snapshot_date in dates
             for dates in (train_dates, validation_dates, test_dates)
         )
-        assert membership == 1
+        assert membership in (0, 1)
         assert len(rows) == 4
 
 
@@ -218,11 +219,10 @@ def test_threshold_selection_maximizes_validation_f1() -> None:
 def test_test_labels_cannot_change_validation_threshold_selection(validated_data) -> None:
     splits = chronological_split(validated_data)
     first = train_baselines(splits, random_state=23)
-    altered_test = splits.test.copy()
-    altered_test[TARGET_COLUMN] = 1 - altered_test[TARGET_COLUMN]
-    second = train_baselines(
-        type(splits)(splits.train, splits.validation, altered_test), random_state=23
-    )
+    altered = validated_data.copy()
+    mask = altered.snapshot_date >= splits.test.snapshot_date.min()
+    altered.loc[mask, TARGET_COLUMN] = 1 - altered.loc[mask, TARGET_COLUMN]
+    second = train_baselines(chronological_split(attest(altered)), random_state=23)
 
     assert first.best_model_name == second.best_model_name
     for name in MODEL_ORDER:
@@ -244,7 +244,7 @@ def test_artifacts_include_pipeline_and_required_metadata(
     assert pipeline.predict_proba(
         trained_result.splits.test[MODEL_FEATURE_COLUMNS].iloc[:2]
     ).shape == (2, 2)
-    assert metadata["sentinel_version"] == "0.5.0"
+    assert metadata["sentinel_version"] == "0.6.0"
     assert metadata["model_type"] == trained_result.best_model_name
     assert metadata["feature_columns"] == MODEL_FEATURE_COLUMNS
     assert metadata["selected_threshold"] == pytest.approx(

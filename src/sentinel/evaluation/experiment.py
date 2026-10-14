@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,42 @@ import pandas as pd
 from sentinel import __version__
 from sentinel.cross_project.data import MultiRepositoryDataset
 from sentinel.cross_project.experiment import run_cross_project_evaluation
+from sentinel.evaluation.action_evaluation import (
+    ACTION_QUALITY_COLUMNS,
+    build_action_evaluation,
+)
+from sentinel.evaluation.calibration import (
+    DEFAULT_CALIBRATION_BINS,
+    RiskCalibrationResult,
+    build_risk_calibration,
+    validate_calibration_options,
+)
+from sentinel.evaluation.decision_brief import (
+    DEVELOPER_ACTION_COLUMNS,
+    build_decision_brief,
+)
+from sentinel.evaluation.explain import (
+    EXPLANATION_COLUMNS,
+    add_top_explanations_to_ranking,
+    build_explanation_summary,
+    explain_predictions,
+    limit_explanations,
+    sort_explanations,
+)
+from sentinel.evaluation.insights import (
+    add_actionable_insights_to_ranking,
+    build_actionable_insights,
+)
+from sentinel.evaluation.project_intelligence import (
+    DEVELOPER_PRIORITY_COLUMNS,
+    build_project_intelligence,
+)
+from sentinel.evaluation.risk import (
+    DEFAULT_RISK_THRESHOLD,
+    DEFAULT_TOP_RISK,
+    build_risk_ranking,
+    build_risk_summary,
+)
 from sentinel.ml.data import (
     DATE_COLUMN,
     PATH_COLUMN,
@@ -25,7 +62,7 @@ from sentinel.ml.training import ProgressCallback, TrainingResult, train_baselin
 
 @dataclass
 class EvaluationReport:
-    """Normalized artifacts for one Sentinel V5 evaluation experiment."""
+    """Normalized artifacts for one Sentinel unified evaluation experiment."""
 
     experiment_type: str
     dataset_summary: dict[str, Any]
@@ -37,6 +74,26 @@ class EvaluationReport:
     confusion_matrix: np.ndarray
     confusion_matrix_label: str
     key_findings: tuple[str, ...]
+    risk_ranking: pd.DataFrame
+    risk_summary: dict[str, Any]
+    prediction_explanations: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=EXPLANATION_COLUMNS)
+    )
+    explanation_summary: dict[str, Any] = field(default_factory=dict)
+    actionable_insights: dict[str, Any] = field(default_factory=dict)
+    project_intelligence: dict[str, Any] = field(default_factory=dict)
+    developer_priority: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=DEVELOPER_PRIORITY_COLUMNS)
+    )
+    decision_brief: dict[str, Any] = field(default_factory=dict)
+    developer_actions: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=DEVELOPER_ACTION_COLUMNS)
+    )
+    explanation_action_evaluation: dict[str, Any] = field(default_factory=dict)
+    action_quality: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=ACTION_QUALITY_COLUMNS)
+    )
+    risk_calibration: RiskCalibrationResult | None = None
 
 
 def _date_range(data: pd.DataFrame) -> dict[str, str]:
@@ -118,8 +175,9 @@ def _within_metrics(result: TrainingResult) -> dict[str, Any]:
             for name, model in result.models.items()
         },
         "random_state": result.random_state,
+        "temporal_maturity": result.temporal_audit or {"status": "legacy_unverified"},
         "leakage_controls": {
-            "split": "chronological_distinct_snapshot_dates_70_15_15",
+            "split": result.temporal_audit.get("protocol", "legacy_unverified"),
             "preprocessing": "training_only",
             "threshold_selection": "validation_only",
             "model_selection": "validation_only",
@@ -137,11 +195,23 @@ def evaluate_within_project(
     data: pd.DataFrame,
     *,
     random_state: int = DEFAULT_RANDOM_STATE,
+    top_risk: int = DEFAULT_TOP_RISK,
+    risk_threshold: float = DEFAULT_RISK_THRESHOLD,
+    explain_top_k: int | None = None,
+    calibration_bins: int = DEFAULT_CALIBRATION_BINS,
+    analysis_thresholds: Sequence[float] | None = None,
+    validation_start: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
-    """Run V3 temporal evaluation and normalize it to the V5 report contract."""
+    """Run V3 temporal evaluation under the unified V6 report contract."""
+    calibration_bins, analysis_thresholds = validate_calibration_options(
+        calibration_bins, analysis_thresholds
+    )
     result = train_baselines(
-        chronological_split(data),
+        chronological_split(data, validation_start=validation_start,
+                            test_start=test_start, test_end=test_end),
         random_state=random_state,
         progress=progress,
     )
@@ -167,6 +237,68 @@ def evaluate_within_project(
         ),
         f"Its highest-ranked explanatory feature was {top_feature}.",
     )
+    risk_ranking = build_risk_ranking(
+        result.splits.test,
+        best.test_scores,
+        model=result.best_model_name,
+        evaluation_mode="within_project_temporal_test",
+        score_method=best.score_method,
+        decision_threshold=best.selected_threshold,
+    )
+    full_explanations = explain_predictions(
+        best.pipeline,
+        result.splits.test,
+        result.feature_columns,
+        best.test_scores,
+        model=result.best_model_name,
+        evaluation_mode="within_project_temporal_test",
+        decision_threshold=best.selected_threshold,
+        reference_features=result.splits.test,
+    )
+    risk_ranking = add_top_explanations_to_ranking(
+        risk_ranking, full_explanations
+    )
+    prediction_explanations = sort_explanations(
+        limit_explanations(full_explanations, explain_top_k)
+    )
+    explanation_summary = build_explanation_summary(
+        prediction_explanations, explain_top_k=explain_top_k
+    )
+    actionable_insights = build_actionable_insights(full_explanations)
+    risk_ranking = add_actionable_insights_to_ranking(
+        risk_ranking, actionable_insights
+    )
+    risk_summary = build_risk_summary(
+        risk_ranking,
+        top_risk=top_risk,
+        risk_threshold=risk_threshold,
+        selected_model=result.best_model_name,
+        evaluation_mode="within_project_temporal_test",
+    )
+    project_intelligence = build_project_intelligence(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="within_project",
+    )
+    decision_brief = build_decision_brief(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        project_intelligence.artifact,
+        project_intelligence.developer_priority,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="within_project",
+        model_metadata=risk_summary["model_metadata"],
+    )
+    action_evaluation = build_action_evaluation(
+        risk_ranking,
+        prediction_explanations,
+        decision_brief.developer_actions,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="within_project",
+    )
     return EvaluationReport(
         experiment_type="within_project",
         dataset_summary=_within_dataset_summary(result),
@@ -180,6 +312,23 @@ def evaluate_within_project(
         ),
         confusion_matrix_label=f"{result.best_model_name} on temporal test split",
         key_findings=findings,
+        risk_ranking=risk_ranking,
+        risk_summary=risk_summary,
+        prediction_explanations=prediction_explanations,
+        explanation_summary=explanation_summary,
+        actionable_insights=actionable_insights,
+        project_intelligence=project_intelligence.artifact,
+        developer_priority=project_intelligence.developer_priority,
+        decision_brief=decision_brief.artifact,
+        developer_actions=decision_brief.developer_actions,
+        explanation_action_evaluation=action_evaluation.artifact,
+        action_quality=action_evaluation.action_quality,
+        risk_calibration=build_risk_calibration(
+            risk_ranking,
+            experiment_type="within_project",
+            calibration_bins=calibration_bins,
+            analysis_thresholds=analysis_thresholds,
+        ),
     )
 
 
@@ -246,15 +395,27 @@ def evaluate_cross_project(
     *,
     random_state: int = DEFAULT_RANDOM_STATE,
     same_project_metadata: str | Path | None = None,
+    top_risk: int = DEFAULT_TOP_RISK,
+    risk_threshold: float = DEFAULT_RISK_THRESHOLD,
+    explain_top_k: int | None = None,
+    calibration_bins: int = DEFAULT_CALIBRATION_BINS,
+    analysis_thresholds: Sequence[float] | None = None,
+    validation_start: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationReport:
-    """Run V4 leave-one-project-out evaluation under the V5 report contract."""
+    """Run V4 leave-one-project-out evaluation under the V6 report contract."""
+    calibration_bins, analysis_thresholds = validate_calibration_options(
+        calibration_bins, analysis_thresholds
+    )
     result = run_cross_project_evaluation(
         dataset,
         random_state=random_state,
         same_project_metadata=same_project_metadata,
         progress=progress,
-        retain_models=False,
+        retain_models=True,
+        validation_start=validation_start, test_start=test_start, test_end=test_end,
     )
     comparison = result.aggregate.copy()
     selected = result.folds.loc[
@@ -305,6 +466,90 @@ def evaluate_cross_project(
         "model_selection": result.model_selection,
         "leakage_audit": result.report["leakage_audit"],
     }
+    risk_samples: list[pd.DataFrame] = []
+    risk_scores: list[np.ndarray] = []
+    risk_models: list[str] = []
+    risk_methods: list[str] = []
+    risk_thresholds: list[float] = []
+    explanation_frames: list[pd.DataFrame] = []
+    for fold_evaluation in result.fold_evaluations:
+        training_result = fold_evaluation.training_result
+        # Defensive guard for the retained-model contract.
+        if training_result is None:
+            raise ValueError("Cross-project risk scoring requires retained models.")
+        model = training_result.best_model
+        row_count = len(fold_evaluation.fold.test)
+        risk_samples.append(fold_evaluation.fold.test)
+        risk_scores.append(model.test_scores)
+        risk_models.extend([training_result.best_model_name] * row_count)
+        risk_methods.extend([model.score_method] * row_count)
+        risk_thresholds.extend([model.selected_threshold] * row_count)
+        explanation_frames.append(
+            explain_predictions(
+                model.pipeline,
+                fold_evaluation.fold.test,
+                training_result.feature_columns,
+                model.test_scores,
+                model=training_result.best_model_name,
+                evaluation_mode="cross_project_held_out_folds",
+                decision_threshold=model.selected_threshold,
+                reference_features=fold_evaluation.fold.test,
+            )
+        )
+    combined_samples = pd.concat(risk_samples, ignore_index=True)
+    risk_ranking = build_risk_ranking(
+        combined_samples,
+        np.concatenate(risk_scores),
+        model=risk_models,
+        evaluation_mode="cross_project_held_out_folds",
+        score_method=risk_methods,
+        decision_threshold=risk_thresholds,
+    )
+    full_explanations = pd.concat(explanation_frames, ignore_index=True)
+    risk_ranking = add_top_explanations_to_ranking(
+        risk_ranking, full_explanations
+    )
+    prediction_explanations = sort_explanations(
+        limit_explanations(full_explanations, explain_top_k)
+    )
+    explanation_summary = build_explanation_summary(
+        prediction_explanations, explain_top_k=explain_top_k
+    )
+    actionable_insights = build_actionable_insights(full_explanations)
+    risk_ranking = add_actionable_insights_to_ranking(
+        risk_ranking, actionable_insights
+    )
+    risk_summary = build_risk_summary(
+        risk_ranking,
+        top_risk=top_risk,
+        risk_threshold=risk_threshold,
+        selected_model="per_fold_validation_selection",
+        evaluation_mode="cross_project_held_out_folds",
+    )
+    project_intelligence = build_project_intelligence(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="cross_project",
+    )
+    decision_brief = build_decision_brief(
+        risk_ranking,
+        full_explanations,
+        actionable_insights,
+        project_intelligence.artifact,
+        project_intelligence.developer_priority,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="cross_project",
+        model_metadata=risk_summary["model_metadata"],
+    )
+    action_evaluation = build_action_evaluation(
+        risk_ranking,
+        prediction_explanations,
+        decision_brief.developer_actions,
+        risk_threshold=risk_summary["risk_threshold"],
+        experiment_type="cross_project",
+    )
     return EvaluationReport(
         experiment_type="cross_project",
         dataset_summary=_cross_dataset_summary(dataset),
@@ -316,4 +561,21 @@ def evaluate_cross_project(
         confusion_matrix=matrix,
         confusion_matrix_label="pooled per-fold selected models",
         key_findings=findings,
+        risk_ranking=risk_ranking,
+        risk_summary=risk_summary,
+        prediction_explanations=prediction_explanations,
+        explanation_summary=explanation_summary,
+        actionable_insights=actionable_insights,
+        project_intelligence=project_intelligence.artifact,
+        developer_priority=project_intelligence.developer_priority,
+        decision_brief=decision_brief.artifact,
+        developer_actions=decision_brief.developer_actions,
+        explanation_action_evaluation=action_evaluation.artifact,
+        action_quality=action_evaluation.action_quality,
+        risk_calibration=build_risk_calibration(
+            risk_ranking,
+            experiment_type="cross_project",
+            calibration_bins=calibration_bins,
+            analysis_thresholds=analysis_thresholds,
+        ),
     )

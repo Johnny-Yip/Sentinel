@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from temporal_fixtures import write_fixture
+
 
 from sentinel.cross_project.cli import main
 from sentinel.cross_project.data import load_multi_repository_datasets
@@ -15,9 +17,11 @@ from sentinel.cross_project.splitting import build_leave_one_project_out_folds
 from sentinel.ml.data import MODEL_FEATURE_COLUMNS, TARGET_COLUMN, InvalidDatasetError
 from sentinel.ml.models import MODEL_ORDER
 
+CUTS = {"validation_start": "2021-07-01", "test_start": "2022-07-01"}
+
 
 def make_repository_data(
-    repository: str, *, date_count: int = 10, offset: int = 0
+    repository: str, *, date_count: int = 36, offset: int = 0
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for date_index, snapshot_date in enumerate(
@@ -56,7 +60,7 @@ def feature_paths(tmp_path: Path) -> list[Path]:
     paths: list[Path] = []
     for index, repository in enumerate(("owner/alpha", "owner/beta", "owner/gamma")):
         path = tmp_path / f"{repository.rsplit('/', 1)[1]}_features.csv"
-        make_repository_data(repository, offset=index).to_csv(path, index=False)
+        write_fixture(make_repository_data(repository, offset=index), path)
         paths.append(path)
     return paths
 
@@ -68,7 +72,7 @@ def multi_dataset(feature_paths):
 
 @pytest.fixture()
 def cross_project_result(multi_dataset):
-    return run_cross_project_evaluation(multi_dataset, random_state=19)
+    return run_cross_project_evaluation(multi_dataset, random_state=19, **CUTS)
 
 
 def test_repository_metadata_and_summaries_are_preserved(multi_dataset) -> None:
@@ -84,14 +88,14 @@ def test_repository_metadata_and_summaries_are_preserved(multi_dataset) -> None:
         "owner/gamma",
     ]
     for summary in multi_dataset.summaries:
-        assert summary.snapshot_count == 40
+        assert summary.snapshot_count == 144
         assert summary.unique_java_files == 4
-        assert summary.positive_labels + summary.negative_labels == 40
+        assert summary.positive_labels + summary.negative_labels == 144
         assert summary.positive_rate == pytest.approx(
             summary.positive_labels / summary.snapshot_count
         )
         assert summary.start_date == "2020-01-31"
-        assert summary.end_date == "2020-10-31"
+        assert summary.end_date == "2022-12-31"
         assert Path(summary.feature_csv_path).exists()
 
 
@@ -143,7 +147,7 @@ def test_single_repository_input_is_rejected(tmp_path: Path) -> None:
 def test_leave_one_project_out_fold_construction_and_date_grouping(
     multi_dataset,
 ) -> None:
-    folds = build_leave_one_project_out_folds(multi_dataset.data)
+    folds = build_leave_one_project_out_folds(multi_dataset.data, **CUTS)
     assert len(folds) == 3
 
     for fold in folds:
@@ -161,8 +165,8 @@ def test_leave_one_project_out_fold_construction_and_date_grouping(
             validation = fold.validation.loc[
                 fold.validation["repository"] == repository
             ]
-            assert train["snapshot_date"].nunique() == 8
-            assert validation["snapshot_date"].nunique() == 2
+            assert train["snapshot_date"].nunique() == 15
+            assert validation["snapshot_date"].nunique() == 9
             assert set(train["snapshot_date"]).isdisjoint(validation["snapshot_date"])
             assert max(train["snapshot_date"]) < min(validation["snapshot_date"])
             for date, rows in repository_all.groupby("snapshot_date"):
@@ -170,7 +174,7 @@ def test_leave_one_project_out_fold_construction_and_date_grouping(
                 actual = int((train["snapshot_date"] == date).sum()) + int(
                     (validation["snapshot_date"] == date).sum()
                 )
-                assert actual == expected
+                assert actual in (0, expected)
 
 
 def test_repository_and_all_metadata_are_excluded_from_predictors(
@@ -214,14 +218,14 @@ def test_held_out_labels_cannot_change_threshold_or_model_selection(
     feature_paths,
 ) -> None:
     original_dataset = load_multi_repository_datasets(feature_paths)
-    original = run_cross_project_evaluation(original_dataset, random_state=29)
+    original = run_cross_project_evaluation(original_dataset, random_state=29, **CUTS)
 
     changed_path = feature_paths[0]
     changed = pd.read_csv(changed_path)
     changed[TARGET_COLUMN] = 1 - changed[TARGET_COLUMN]
-    changed.to_csv(changed_path, index=False)
+    write_fixture(changed, changed_path)
     altered_dataset = load_multi_repository_datasets(feature_paths)
-    altered = run_cross_project_evaluation(altered_dataset, random_state=29)
+    altered = run_cross_project_evaluation(altered_dataset, random_state=29, **CUTS)
 
     original_fold = next(
         evaluation
@@ -250,8 +254,8 @@ def test_held_out_labels_cannot_change_threshold_or_model_selection(
 
 
 def test_cross_project_run_is_reproducible(multi_dataset) -> None:
-    first = run_cross_project_evaluation(multi_dataset, random_state=41)
-    second = run_cross_project_evaluation(multi_dataset, random_state=41)
+    first = run_cross_project_evaluation(multi_dataset, random_state=41, **CUTS)
+    second = run_cross_project_evaluation(multi_dataset, random_state=41, **CUTS)
 
     pd.testing.assert_frame_equal(first.folds, second.folds)
     pd.testing.assert_frame_equal(first.aggregate, second.aggregate)
@@ -368,7 +372,7 @@ def test_all_cross_project_artifacts_are_created(
     }
     assert all(path.exists() for path in paths.values())
     report = json.loads(paths["report_json"].read_text(encoding="utf-8"))
-    assert report["sentinel_version"] == "0.5.0"
+    assert report["sentinel_version"] == "0.6.0"
     assert report["leakage_audit"]["status"] == "passed"
     assert len(pd.read_csv(paths["folds"])) == 3 * 3 * 2
     assert len(pd.read_csv(paths["aggregate"])) == 3
@@ -386,6 +390,8 @@ def test_cli_creates_artifacts_and_reports_audit(
             str(output_dir),
             "--random-state",
             "7",
+            "--validation-start", CUTS["validation_start"],
+            "--test-start", CUTS["test_start"],
             "--same-project-metadata",
             str(tmp_path / "missing.json"),
         ]

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinel-repository-miner"
-version = "0.5.0"
-description = "Repository mining, defect prediction, and unified evaluation for Sentinel"
+version = "0.6.0"
+description = "Repository mining, defect prediction, and explainable risk evaluation"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

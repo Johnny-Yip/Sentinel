@@ -27,3 +27,4 @@ sentinel-output/
 # Cross-project experiment outputs
 *_features.csv
 artifacts/
+reports/

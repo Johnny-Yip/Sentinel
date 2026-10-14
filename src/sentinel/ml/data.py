@@ -118,15 +118,19 @@ def validate_dataset(dataset: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
-def load_dataset(feature_csv: str | Path) -> pd.DataFrame:
+def load_dataset(
+    feature_csv: str | Path, *, dataset_metadata: str | Path | None = None,
+) -> pd.DataFrame:
     """Load and validate a V2 feature CSV."""
     source = Path(feature_csv).expanduser().resolve()
     try:
-        dataset = pd.read_csv(source)
+        dataset = pd.read_csv(source, float_precision="round_trip")
     except FileNotFoundError as exc:
         raise InvalidDatasetError(f"Feature CSV does not exist: {source}") from exc
     except pd.errors.EmptyDataError as exc:
         raise InvalidDatasetError(f"Feature CSV is empty: {source}") from exc
     except pd.errors.ParserError as exc:
         raise InvalidDatasetError(f"Feature CSV could not be parsed: {exc}") from exc
-    return validate_dataset(dataset)
+    from sentinel.provenance import load_feature_metadata
+
+    return load_feature_metadata(validate_dataset(dataset), source, dataset_metadata)

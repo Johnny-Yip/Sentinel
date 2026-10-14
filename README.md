@@ -1,11 +1,49 @@
 # Sentinel
 
 Sentinel is a machine-learning software engineering project intended to predict
-which Java source files are most likely to be involved in future defects. V5
-adds unified evaluation, explainability, and experiment reports to the V1
-repository miner, V2 leakage-safe feature pipeline, V3 reproducible sklearn
-baselines, and V4 cross-project evaluation. It does not expose an application
-service or UI.
+which Java source files are most likely to be involved in future defects. V6
+adds snapshot-level defect-risk scoring, individual prediction explanations,
+actionable developer inspection guidance, project-level risk intelligence,
+diagnostic explanation/action evaluation, risk calibration/threshold analysis,
+and Phase 8 provenance-bound, maturity-safe temporal evaluation
+to V5's unified evaluation and experiment reports. It builds on
+the V1 repository miner, V2 leakage-safe feature pipeline, V3 reproducible
+sklearn baselines, and V4 cross-project evaluation. It does not expose an
+application service or UI.
+
+## V6 completion status
+
+Sentinel **0.6.0** implements V6 Phases 1–8. The final architecture keeps mining
+and feature generation separate from the centralized sklearn baselines, then
+adds report adapters and deterministic risk-intelligence layers. Within-project
+and cross-project evaluation share the same training, metrics, predictor
+whitelist, and maturity checks; downstream explanations, guidance, diagnostics,
+and calibration do not change the fitted model or its selected threshold.
+
+| Phase | Completed capability | Implementation |
+|---|---|---|
+| 1 | Snapshot risk scores and deterministic ranking | `evaluation/risk.py` |
+| 2 | Individual linear, tree-path, and fallback explanations | `evaluation/explain.py` |
+| 3 | Feature-based developer inspection guidance | `evaluation/insights.py` |
+| 4 | Project risk concentration, hotspots, trends, and priorities | `evaluation/project_intelligence.py` |
+| 5 | Unified developer brief and project-local action queue | `evaluation/decision_brief.py` |
+| 6 | Explanation stability, evidence, specificity, and alignment diagnostics | `evaluation/action_evaluation.py` |
+| 7 | Per-project calibration and retrospective threshold analysis | `evaluation/calibration.py` |
+| 8 | Hash-bound provenance, 90-day label maturity, shared-calendar LOPO, and final revalidation | `provenance.py`, `ml/temporal.py`, and split/report layers |
+
+Implementation paths are relative to `src/sentinel/`. Each unified evaluation
+writes **21 artifacts**, retaining the V5 report contract and adding the V6
+outputs documented below.
+
+Phase 8 revalidation is complete for the retained monthly commons-lang
+within-project study and bounded quarterly four-project LOPO study. Their
+historical forward evaluation protocol passes the corrected maturity checks;
+this is not a live prospective trial or a universal generalization claim.
+Pre-Phase-8 results remain historical/unverified. See the
+[V6 release summary](V6_RELEASE_SUMMARY.md) for the frozen schedules, results,
+verification scope, reproducibility requirements, and remaining limitations.
+Raw histories, generated datasets, and experiment directories are ignored by
+Git and are not distributed with this source repository.
 
 ## Pipeline
 
@@ -29,6 +67,18 @@ leave-one-project-out V4 report + artifacts
         |
         v
 unified V5 evaluation report
+        |
+        v
+ranked, explained, actionable, and project-level V6 risk intelligence
+        |
+        v
+unified developer risk brief and inspection queue
+        |
+        v
+diagnostic explanation stability, evidence, specificity, and alignment
+        |
+        v
+retrospective risk calibration and operating-threshold analysis
 ```
 
 The raw history contains one row per Java file changed in a commit. The V2
@@ -80,6 +130,10 @@ python -m sentinel.features \
   commons-lang_java_history.csv \
   --output data/commons-lang_features.csv
 ```
+
+The command also writes `<features.csv>.metadata.json`, binding the feature CSV
+to its source history and observation coverage. Keep this sidecar with the CSV;
+training and evaluation require verified provenance (see Phase 8).
 
 The command reports the number of snapshots, unique Java file paths, positive
 and negative labels, the positive-label percentage, and the output location.
@@ -173,9 +227,10 @@ threshold, prints feature signals, and saves the validation-selected model.
 A random row split would mix earlier and later snapshots of the same evolving
 codebase. That would give training access to patterns from the future relative
 to some evaluated rows and produce an unrealistically optimistic estimate.
-V3 instead sorts the distinct snapshot dates and assigns the earliest 70% to
-training, the next 15% to validation, and the final 15% to test. Every row with
-the same `snapshot_date` stays in one partition.
+V3 sorts distinct snapshot dates to choose candidate boundaries at 70% and
+85%. Phase 8 then purges training and validation snapshots whose 90-day labels
+have not matured before the next partition starts. Final retained proportions
+can differ from 70/15/15. Whole repository/date groups are retained or excluded.
 
 Preprocessing and model fitting use only the training period. The validation
 period selects each probabilistic decision threshold by maximum F1 and selects
@@ -184,8 +239,9 @@ those choices are locked.
 
 ### Why PR-AUC matters
 
-Only about 1.97% of the current commons-lang snapshots are positive. A model
-that predicts every snapshot as negative would therefore be about 98% accurate
+Only about 1.97% of the retained full monthly commons-lang dataset is positive;
+prevalence varies by partition and project. A model that predicts every snapshot
+as negative would therefore be about 98% accurate on that full population
 while finding no future bug-fix events. Accuracy is not reported as the primary
 metric. Sentinel emphasizes PR-AUC (Average Precision), which summarizes the
 precision/recall tradeoff for the rare positive class, while also reporting:
@@ -223,14 +279,26 @@ The V3 leakage audit passes the following controls:
 - no random splitting is used, and rows sharing a snapshot date remain grouped;
 - all preprocessors and models are fitted on training rows only;
 - validation labels alone select thresholds and the winning model;
-- test labels never influence preprocessing, fitting, threshold selection, or
-  model selection, and test metrics are computed only after selection is locked;
+- model and threshold selection are locked before test scoring; the pre-fit
+  structural audit checks test labels for validity and observation coverage
+  without using them to select models or thresholds;
+- training labels mature strictly before validation starts, validation labels
+  mature strictly before testing starts, and test labels are fully observed;
+- source-history coverage and feature identities are bound by verified hashes;
 - only the historical V2 feature whitelist is passed to sklearn; and
 - the future label, repository/path/date metadata, identifiers, unrecognized
   columns, and future-derived fields are excluded from predictors.
 
 The same audit result and control settings are recorded in each generated
 `metadata.json`.
+
+**Historical results were superseded:** pre-Phase-8 audits did not check
+outcome-window maturity. The old commons-lang validation ended 2022-09-30
+before a 2022-10-31 test start, although those labels matured on 2022-12-29.
+Phase 8 purged 3,583 training and 2,720 validation snapshots and regenerated
+the dependent V5–V6 reports. The retained test population stayed unchanged.
+Only the corrected Phase 8 study supports the historical forward-protocol
+claims in the [release summary](V6_RELEASE_SUMMARY.md).
 
 The saved artifact directory contains:
 
@@ -254,17 +322,19 @@ V3's same-project temporal evaluation: V3 learns from earlier snapshots of the
 same codebase, while V4 excludes every row from the target repository until the
 single final held-out evaluation.
 
-V4 uses leave-one-project-out evaluation. For each repository in turn, that
-entire repository is held out. Within every remaining repository, the earliest
-80% of distinct snapshot dates become training data and the latest 20% become
-validation data. Rows sharing a date within a repository always remain
-together. The training portions and validation portions are then concatenated
-separately. Preprocessing and model fitting use only training rows, while
-validation PR-AUC selects the model and validation F1 selects each model's
-threshold. The held-out repository is evaluated once after those choices are
-locked.
+V4 uses leave-one-project-out evaluation. Phase 8 requires one explicit shared
+validation start and test start across repositories and folds. Source training
+labels mature before validation starts; source validation labels mature before
+test starts. Only the held-out repository's eligible test-period rows are scored.
+Training/validation rows from that repository are never used. Model and threshold
+selection objectives remain unchanged. Independent per-repository 80/20 splits
+are no longer accepted as a prospective protocol.
 
 ### Generate multiple repository datasets
+
+Regenerate feature sidecars from the original mining histories before evaluating
+legacy CSVs. All cross-project command examples below require the shared date
+options documented in Phase 8; illustrative dates are not performance-selected.
 
 Mine each public Java repository with V1 and transform it with V2. For example:
 
@@ -299,8 +369,18 @@ training/validation splitting.
 
 ### Run leave-one-project-out evaluation
 
+Define and freeze shared dates before inspecting outcomes. These illustrative
+dates require sufficient overlapping history and are not the retained Phase 8
+study schedule:
+
+```bash
+export VALIDATION_START=2020-01-01
+export TEST_START=2021-01-01
+```
+
 ```bash
 sentinel-cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -313,6 +393,7 @@ The equivalent module command is:
 
 ```bash
 python -m sentinel.cross_project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -366,10 +447,13 @@ aggregated across folds. Dataset shift compares training-repository and
 held-out medians/IQRs for every predictor and includes an optional robust median
 shift in training-IQR units.
 
-When `artifacts/commons-lang/metadata.json` is present, V4 also compares its
-commons-lang held-out Logistic Regression metrics with the recorded V3
-same-project test metrics. The comparison reports PR-AUC, F1, and ROC-AUC
-differences without using V3 data for V4 fitting or selection.
+When supplied with `--same-project-metadata`, V4 can compare held-out
+Logistic Regression metrics with recorded V3 same-project test metrics. The
+comparison requires matching maturity protocols, calendar boundaries, and
+test-partition evidence; otherwise it is explicitly unavailable. It reports
+PR-AUC, F1, and ROC-AUC differences without using V3 data for V4 fitting or
+selection. The retained monthly within-project and quarterly LOPO studies
+are different populations and do not establish this matched comparison.
 
 The V4 artifact directory is separate from V3 and contains:
 
@@ -396,7 +480,8 @@ The dedicated V4 leakage audit must pass for artifacts to be produced. It checks
 repository disjointness, per-repository date grouping, the historical feature
 whitelist, metadata/label/future-field exclusion, train-only preprocessing,
 validation-only threshold and model selection, and final-evaluation-only use of
-held-out labels.
+held-out labels. It also verifies shared calendar boundaries, hash-bound
+provenance, complete test observation, and label maturity before fitting.
 
 ## V5: unified evaluation and reporting
 
@@ -417,6 +502,7 @@ Run a cross-project evaluation with:
 
 ```bash
 sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
   data/commons-lang_features.csv \
   data/commons-io_features.csv \
   data/commons-collections_features.csv \
@@ -459,10 +545,894 @@ evaluation, it pools the final confusion matrices from the model selected in
 each held-out fold. `report.md` summarizes the dataset, comparison, top feature
 signals, and key findings.
 
+## V6 Phase 1: defect-risk scoring and ranking
+
+V6 adds a `risk_score` for every snapshot that is part of final evaluation:
+the temporal test split in within-project mode and each repository's held-out
+fold in cross-project mode. The score is the selected model's positive-class
+probability when `predict_proba` is available. For compatible estimators that
+only expose `decision_function`, Sentinel deterministically maps the signed
+margin through a sigmoid. All scores are therefore bounded in `[0, 1]`; the
+fallback is useful for ordering but is not a calibrated probability.
+
+Samples are sorted from highest to lowest risk. Equal scores use project, file
+path, snapshot date, model name, and original row order as deterministic
+tie-breakers. `predicted_label` uses the model's validation-selected decision
+threshold. The separate risk threshold controls only the high-risk count and
+top list in the summary; it does not change predictions or model metrics.
+
+Both existing `sentinel-evaluate` modes create two additional files alongside
+all five V5 artifacts:
+
+- `risk_ranking.csv` contains rank, risk score, predicted and true labels,
+  project, file path, snapshot date, selected model, scoring method, evaluation
+  mode, and decision threshold.
+- `risk_summary.json` contains the evaluated and high-risk sample counts, mean
+  and maximum scores, the configured cutoff, top high-risk samples, and
+  model/mode metadata.
+
+The defaults are the top 10 rows at a high-risk cutoff of `0.5`. They can be
+changed for either mode:
+
+```bash
+sentinel-evaluate within-project data/commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --top-risk 25 \
+  --risk-threshold 0.7
+
+sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  data/commons-lang_features.csv \
+  data/commons-io_features.csv \
+  data/commons-collections_features.csv \
+  --output-dir reports/cross-project \
+  --top-risk 50 \
+  --risk-threshold 0.65
+```
+
+In cross-project reports, independently selected fold models may have different
+decision thresholds. The CSV records the model and threshold used for each row
+so that the pooled ranking remains auditable.
+
+## V6 Phase 2: individual prediction explanations
+
+Phase 2 explains every sample in the final evaluation population: the temporal
+test split for within-project evaluation and each held-out repository's eligible
+test-period rows for cross-project evaluation. This is local explanation, which
+answers why the selected fitted model assigned one snapshot its risk score. It differs from
+`feature_importance.csv`, which summarizes a feature's overall model-level
+importance and cannot explain a particular prediction.
+
+For Logistic Regression, Sentinel multiplies each fitted coefficient by the
+sample's transformed value after the training-fitted scaler. These exact
+additive contributions are in log-odds space. For classifier trees and Random
+Forests, Sentinel attributes the positive-class probability change along the
+sample's decision path to each split feature and averages across trees. Other
+estimators use a deterministic local fallback: replace one raw feature at a
+time with that evaluation partition's median and measure the risk-score change.
+No SHAP dependency is required.
+
+A positive contribution (`increases_risk`) pushes the prediction toward higher
+defect risk relative to that method's baseline; a negative contribution
+(`decreases_risk`) is protective; an exact zero is `neutral`. Raw contribution
+units differ by method and should not be compared across model families.
+`normalized_contribution` is the feature's share of the sample's retained
+absolute contribution magnitude, so non-zero shares sum to approximately `1`
+for each sample. With `--explain-top-k`, detailed rows are renormalized over the
+retained features; guidance still uses the full explanation set. `feature_value` is the raw value when preprocessing is one-to-one, and
+`model_input_value` records the actual transformed value used by the model.
+
+Both `sentinel-evaluate` modes now also generate:
+
+- `prediction_explanations.csv`, with one row per explained feature and sample,
+  including identifiers, prediction fields, raw and normalized contributions,
+  direction, method, and deterministic local rank;
+- `explanation_summary.json`, with explained row counts, common increasing and
+  decreasing features, average absolute contribution by feature, and model and
+  method metadata; and
+- four concise columns in `risk_ranking.csv`: the strongest risk-increasing and
+  risk-decreasing feature and contribution for each sample.
+
+All eight historical predictors are explained by default. Limit only the
+detailed CSV rows (while retaining the strongest positive and negative ranking
+drivers) with `--explain-top-k`:
+
+```bash
+sentinel-evaluate within-project data/commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --explain-top-k 5
+
+sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  data/commons-lang_features.csv \
+  data/commons-io_features.csv \
+  data/commons-collections_features.csv \
+  --output-dir reports/cross-project \
+  --explain-top-k 5
+```
+
+## V6 Phase 3: Actionable Risk Insights
+
+Phase 3 translates Phase 2's local contributions into concise, developer-facing
+inspection guidance. It does not calculate model explanations again. Each of the
+eight supported historical features has a stable category, human-readable
+interpretation, and practical recommendation. Positive contributions are risk
+signals and negative contributions are protective signals; this describes the
+fitted model's local behavior, not a claim that a larger raw feature value is
+always harmful or helpful.
+
+For every evaluated snapshot, Sentinel selects up to three strongest non-neutral
+supported contributions using absolute magnitude and feature name as a stable
+tie-breaker. Insight generation always uses the full explanation set, so
+`--explain-top-k` limits only `prediction_explanations.csv` and cannot change the
+ranking guidance. Unknown future features are skipped rather than assigned
+guessed advice and are listed in artifact metadata.
+
+`risk_ranking.csv` now includes three concise fields:
+
+- `primary_risk_reason`: interpretation of the strongest risk-increasing signal,
+  or an explicit fallback when no such signal exists;
+- `recommended_action`: the corresponding developer inspection prompt; and
+- `risk_signal_count`: number of supported positive contributions for the
+  sample.
+
+Both within-project and cross-project evaluations also write
+`actionable_insights.json`. It contains the per-sample selected risk and
+protective signals, aggregate counts, common signal categories, feature
+definitions, and deterministic-method metadata. A shortened sample looks like:
+
+```json
+{
+  "schema_version": 1,
+  "total_samples": 24,
+  "common_risk_signals": [
+    {
+      "feature": "code_churn",
+      "category": "high_churn",
+      "sample_count": 11
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "owner/project|src/Parser.java|2024-01-31",
+      "primary_risk_reason": "Overall code churn is pushing predicted risk upward.",
+      "recommended_action": "Inspect churn hotspots for repeated rewrites, broad diffs, and weak regression coverage.",
+      "risk_signal_count": 3,
+      "protective_signal_count": 2,
+      "insights": [
+        {
+          "feature": "code_churn",
+          "category": "high_churn",
+          "signal_type": "risk"
+        }
+      ]
+    }
+  ]
+}
+```
+
+## V6 Phase 4: Project-Level Risk Intelligence
+
+Phase 4 aggregates the final-evaluation predictions and the already-computed
+Phase 2/3 explanations and insights into deterministic engineering summaries.
+It does not fit another model, recompute attribution, or create a second
+definition of high risk. Every high-risk count uses the same
+`--risk-threshold` cutoff as `risk_summary.json`; this summary cutoff remains
+separate from the validation-selected threshold that produces model labels and
+metrics.
+
+Each V6 evaluation directory now also contains:
+
+- `project_intelligence.json`, a stable schema with project summary statistics,
+  risk concentration, recurring file hotspots, risk/protective signal profiles,
+  descriptive temporal trends, top priorities, and method metadata; and
+- `developer_priority.csv`, the complete deterministic sample inspection queue.
+
+The JSON's principal fields are:
+
+- `summary`: evaluated/high-risk counts, high-risk percentage, mean, median and
+  maximum predicted risk, five fixed risk-score bands, dominant signals, and
+  the number of identifiable risky files;
+- `risk_concentration`: risk share from the top 10% and 20% of samples, the
+  sample count needed to reach 50% of aggregate predicted risk, and
+  concentration in repeatedly high-risk file paths;
+- `hotspots`: file paths with at least two observations at or above the risk
+  cutoff, ordered by repeated high-risk count and stable tie-breakers;
+- `risk_signal_profile`: common and strongest aggregate risk/protective
+  contributions, using the existing Phase 3 feature registry and recording
+  contribution methods/spaces;
+- `temporal_analysis`: calendar-month mean risk, high-risk rate, dominant risk
+  signal, and change from the prior available period; and
+- `metadata`: formulas, tie-breaks, threshold semantics, unsupported analyses,
+  unknown features, identifier/timestamp availability, and limitations.
+
+### Concentration definitions
+
+Sentinel sorts risk scores descending. The top-10% share is the sum of the
+highest `ceil(0.10 * sample_count)` scores divided by the sum of all scores; the
+top-20% share uses `ceil(0.20 * sample_count)`. The 50% count is the smallest
+descending-score prefix whose sum reaches at least half of aggregate predicted
+risk. If aggregate predicted risk is zero, both shares and the 50% count are
+defined as zero. These ceiling rules make one-row and other small datasets
+well-defined.
+
+Repeated-entity concentration uses every observation of any available
+`file_path` with at least two high-risk observations. Sentinel reports those
+observations' share of aggregate predicted risk and their share of identifiable
+high-risk observations. If paths are unavailable, hotspot analysis is marked
+unsupported rather than inventing identifiers.
+
+### Developer priority score
+
+The queue uses this transparent inspection heuristic:
+
+```text
+recurring_hotspot_evidence = high_risk_rate * min(high_risk_count / 2, 1)
+priority_score = 0.80 * predicted_risk + 0.20 * recurring_hotspot_evidence
+```
+
+`high_risk_count` and `high_risk_rate` are calculated over observations of the
+same available file path in the project. The recurrence multiplier reaches its
+maximum at two high-risk observations. Rows are ordered by priority score,
+predicted risk, recurring high-risk count, identifier, snapshot date, and
+source order. In cross-project mode, ranks restart at 1 inside each held-out
+project. A priority score is an inspection heuristic, not a probability.
+
+Run a within-project report exactly as in earlier V6 phases:
+
+```bash
+sentinel-evaluate within-project commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --risk-threshold 0.7
+```
+
+The resulting `project_intelligence.json` has a `single_project` summary and
+`report.md` includes a concise `Project Risk Intelligence` section. For
+cross-project/LOPO evaluation:
+
+```bash
+sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  commons-lang_features.csv \
+  commons-io_features.csv \
+  --output-dir reports/commons-cross-project \
+  --risk-threshold 0.7
+```
+
+The cross-project artifact uses `summary.analysis_scope = "per_project"` and a
+`projects` array. Each held-out project has its own summary, concentration,
+hotspots, signal profile, temporal analysis, and priority ranks. Sentinel does
+not pool unrelated held-out projects into a misleading project-level mean or
+concentration statistic.
+
+Project intelligence summarizes fitted-model signals. Risk signals are
+associations, not causal claims; temporal movements are descriptive and do not
+claim statistical significance. Contribution totals should only be compared
+within the same explanation method and contribution space. Sentinel does not
+prove that a file contains a defect, and missing timestamps or identifiers are
+reported explicitly instead of being fabricated.
+
+## V6 Phase 5: Unified Developer Risk Brief
+
+Phase 5 turns the existing Phase 1–4 outputs into one concise decision layer for
+developers. It consumes `risk_ranking.csv`, the full in-memory prediction
+explanations, `actionable_insights.json`, `project_intelligence.json`,
+`developer_priority.csv`, the feature insight registry, and available model
+metadata. It does not fit a model, rescore a sample, choose a threshold, or
+recompute an explanation.
+
+Every unified evaluation now adds:
+
+- `developer_risk_brief.json`, the stable machine-readable project brief;
+- `developer_risk_brief.md`, a standalone developer-facing rendering; and
+- `developer_actions.csv`, the complete queue of samples at or above the
+  existing configured risk cutoff.
+
+The earlier V5 and V6 artifacts remain unchanged. `report.md` also includes a
+concise `Developer Risk Brief` section containing the attention level,
+concentration result, recurring hotspot, temporal direction, highest-risk
+signal, up to five actions per project, and an interpretation warning.
+
+### Risk tier definitions
+
+Tiers are project-local inspection priorities. Let `H` be the number of samples
+in one project whose `risk_score >= risk_threshold`. Sort those samples by the
+existing Phase 4 priority score, predicted risk, recurring-hotspot evidence,
+identifier, timestamp, existing reason/action text, and signal count. Then:
+
+- `CRITICAL`: the first `max(1, ceil(0.10 * H))` priority items;
+- `HIGH`: the remaining items through `ceil(0.30 * H)`;
+- `MEDIUM`: all remaining items at or above the cutoff; and
+- `LOW`: samples below the cutoff.
+
+When `H` is zero, every evaluated sample is `LOW` and there are no developer
+actions. Sparse projects need not contain every tier. Ranks and tier boundaries
+restart within each project. The names express relative inspection urgency;
+they are not calibrated defect probabilities or defect-severity labels.
+
+### Attention level definitions
+
+The executive-summary attention level is a deterministic workload heuristic
+based on the fraction of project samples at or above the same configured risk
+cutoff:
+
+- `LOW`: no samples meet the cutoff;
+- `MODERATE`: a non-zero share below 10% meets it;
+- `ELEVATED`: at least 10% but less than 25% meets it; and
+- `HIGH`: at least 25% meets it.
+
+The cutoff remains the Phase 1 `--risk-threshold` summary setting. Neither the
+cutoff nor the attention level replaces the validation-selected classification
+threshold, and neither is a calibrated probability.
+
+### Artifact schemas
+
+`developer_risk_brief.json` contains:
+
+```text
+schema_version
+experiment_type
+analysis_scope
+project_count
+projects[]
+  project
+  executive_summary
+    total_samples
+    high_risk_count
+    high_risk_rate
+    mean_risk
+    concentration_summary
+    top_recurring_hotspot
+    temporal_direction
+    highest_risk_signal
+    number_of_priority_items
+    overall_attention_level
+    risk_tier_counts
+  top_developer_actions[]
+  models_used
+metadata
+  input_dependencies
+  risk_tier_definitions
+  attention_level_definitions
+  tie_breaking_rules
+  feature_registry
+  model_metadata
+  limitations
+```
+
+Each entry in `top_developer_actions` contains `project`, `priority_rank`,
+`risk_tier`, `identifier`, `file_path`, `snapshot_date`, `predicted_risk`,
+`priority_score`, `short_reason`, `dominant_signal`, `recommended_action`, and
+`supporting_evidence`. The top list is limited to five per project.
+`developer_actions.csv` uses the same columns for the complete high-risk action
+queue and stores `supporting_evidence` as deterministic JSON text. Missing file
+paths, timestamps, signals, and explanation evidence remain empty/null; Sentinel
+does not manufacture replacements.
+
+Recommendations are copied from Phase 3's stable feature registry and are
+phrased as inspection, review, ownership, or testing suggestions. They are not
+claims that a defect exists. Supporting evidence records only available model
+outputs, such as the risk score and cutoff, recurring high-risk observations,
+dominant feature contribution, explanation method, and contribution space.
+
+### Within-project example
+
+```bash
+sentinel-evaluate within-project data/commons-lang_features.csv \
+  --output-dir reports/commons-lang-within \
+  --risk-threshold 0.7 \
+  --random-state 42
+```
+
+This creates one project brief. Its action ranks and tiers apply only to the
+temporal test population for that project.
+
+### Cross-project example
+
+```bash
+sentinel-evaluate cross-project \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  data/commons-lang_features.csv \
+  data/commons-io_features.csv \
+  data/commons-collections_features.csv \
+  --output-dir reports/cross-project \
+  --risk-threshold 0.7 \
+  --random-state 42
+```
+
+This creates a separate brief for every held-out project. Each section has its
+own tier counts, attention level, hotspot, temporal description, and action
+ranks. Sentinel does not pool project risk levels or compare absolute rankings
+across independently selected held-out models.
+
+Phase 5 inherits the limitations of its inputs: scores may be uncalibrated;
+feature contributions are model descriptions rather than causal explanations;
+the V1 schema cannot reliably retire deleted or renamed paths; small projects
+produce coarse relative tiers; and missing identifiers or timestamps limit
+hotspot and temporal analysis. The brief supports prioritization, not automated
+defect adjudication.
+
+## V6 Phase 6: Explanation and Action Evaluation
+
+Phase 6 evaluates the explanation and action outputs from Phases 1–5 using
+deterministic **diagnostic evaluation heuristics**. It reuses the evaluated risk
+ranking, retained `prediction_explanations.csv` vectors, and the complete
+`developer_actions.csv` queue, including its attached evidence. It does not
+train another model, recompute explanations, or change model/threshold
+selection. Existing evaluation commands and Phase 1–5 artifact schemas remain
+unchanged.
+
+Each unified evaluation additionally writes:
+
+- `explanation_action_evaluation.json`: schema version, experiment type, scope,
+  project count, evaluation counts, metric definitions, limitations, and a
+  `projects` array. Each project has its identifier, `evaluation_counts`,
+  `explanation_stability`, `evidence_coverage`, `action_specificity`,
+  `risk_explanation_alignment`, and limitations.
+- `explanation_action_evaluation.md`: a concise standalone diagnostic report.
+- `action_quality.csv`: one row per existing developer action, retaining its
+  project-local rank, tier, identifier, timestamp, and risk score; it adds the
+  coverage/specificity scores, specificity label, evidence flags/counts, and
+  available supporting explanations/signals as JSON text in CSV cells.
+
+The existing `report.md` ends with `## Explanation and Action Evaluation`.
+Within-project evaluation contains one project analysis for the temporal test
+population. Cross-project evaluation contains an independent entry and report
+section for every held-out project. Actions retain the Phase 5 project-local
+ranks and tiers. No pooled metric replaces per-project results.
+
+### Explanation stability
+
+Sort evaluated snapshots of each file chronologically within its project.
+Compare consecutive observations at distinct timestamps at most **62 days**
+apart, using cosine similarity of signed feature contributions. A pair is
+eligible only when both vectors have finite weights, nonzero norms, identical
+retained feature sets, and the same known model, evaluation mode, explanation
+method, and contribution space. No absent feature is filled with zero, and
+duplicate/ambiguous sample identities cannot supply a comparison.
+
+`mean_explanation_similarity` and `median_explanation_similarity` summarize
+eligible pair cosines in [-1, 1]. `stability_pair_count` counts those pairs;
+`stability_sample_count` counts distinct samples participating in them. With
+no eligible pair, both similarity metrics are null and counts are zero.
+Nearby timestamps of the same file are a proxy for similarity, not evidence
+that the underlying code or feature values remained similar.
+
+### Evidence coverage
+
+For each action, five equally weighted availability flags determine coverage:
+
+| Flag | Observed evidence required |
+| --- | --- |
+| `has_identifier` | A nonempty identifier/path from the action |
+| `has_timestamp` | A valid supplied snapshot timestamp |
+| `has_hotspot_evidence` | An identifier and an attached integer `recurring_high_risk_count >= 2`, following Phase 4's hotspot definition |
+| `has_explanation_evidence` | At least one named feature with a finite nonzero contribution in a uniquely matched stored vector or attached action evidence |
+| `has_signal_evidence` | An attached named signal or a positive integer `risk_signal_count` |
+
+`evidence_coverage_score = number_of_true_flags / 5`, in [0, 1]. Zero-valued
+placeholder recurrence/signal counts do not establish positive evidence.
+`evidence_item_count` adds one each for an available identifier, timestamp and
+hotspot record, plus `explanation_item_count` and `signal_item_count`.
+Explanation items are deduplicated by feature across the matched vector and
+attached evidence. Signal items are the maximum of distinct attached signal
+names and the supplied signal count; a count never generates invented names.
+Project summaries include mean/median scores, category counts, and item counts.
+An empty action set has null mean/median scores.
+
+Vector-to-action evidence joins require a known project, identifier and valid
+timestamp, with an unambiguous evaluated sample. Model/evaluation-mode metadata
+must agree where supplied. Embedded Phase 5 evidence can contain a feature
+omitted by `--explain-top-k`; it is preserved as action evidence and never used
+to reconstruct a missing vector weight.
+
+### Action specificity
+
+`specificity_score` is the fraction of four equally weighted checks satisfied:
+
+1. The structured action references a concrete identifier/path.
+2. It references an attached named signal, or names an available explanation
+   feature in its reason/recommendation.
+3. Its recommendation contains an inspection verb (for example inspect, review,
+   check or verify) plus a concrete target: an identifier, named signal/feature,
+   or a fixed term such as edits, diffs, tests, ownership, callers or history.
+4. The recommendation is concrete and has an identifier or signal/feature
+   reference, avoiding purely generic guidance such as “Review code”.
+
+Labels are `LOW` for scores below 0.5, `MODERATE` for scores from 0.5 up to
+0.75, and `HIGH` for scores at least 0.75. The CSV exposes each check; project
+summaries include mean/median scores and label counts. These are fixed English
+text/structure rules, with no external LLM or API.
+
+### Risk–explanation alignment
+
+High risk uses `risk_score >= risk_threshold`, the existing Phase 1 summary
+cutoff, independently of the validation-selected classification threshold.
+
+- `high_risk_sample_count`: evaluated samples meeting that cutoff.
+- `explained_high_risk_count`: high-risk samples with at least one uniquely
+  matched, finite, nonzero named feature contribution.
+- `explanation_coverage_rate`: explained high-risk count divided by high-risk
+  count; null when no samples meet the cutoff.
+- `mean_top_feature_share`: mean of `max(abs(weights)) / sum(abs(weights))`
+  over eligible nonzero retained vectors.
+- `mean_explanation_strength`: mean of `sum(abs(weights))` over eligible
+  explained high-risk vectors; null if their model, method, or contribution
+  space is mixed/unknown. This quantity is not a probability.
+
+The last two metrics include their eligible sample counts and are null when
+not computable. Nonfinite or incomplete vectors do not supply magnitude/share
+metrics. Missing identifiers, timestamps, evidence and undefined measurements
+remain null/unknown; availability flags only describe what was observed.
+
+### Evaluate existing artifacts without fitting or explaining
+
+The reusable API can evaluate an existing output directory directly:
+
+```python
+import json
+from pathlib import Path
+import pandas as pd
+from sentinel.evaluation import build_action_evaluation, build_action_evaluation_markdown
+
+directory = Path("reports/commons-lang-within")
+risk_summary = json.loads((directory / "risk_summary.json").read_text())
+result = build_action_evaluation(
+    pd.read_csv(directory / "risk_ranking.csv"),
+    pd.read_csv(directory / "prediction_explanations.csv"),
+    pd.read_csv(directory / "developer_actions.csv"),
+    risk_threshold=risk_summary["risk_threshold"],
+    experiment_type="within_project",  # Use "cross_project" for a LOPO report.
+)
+(directory / "explanation_action_evaluation.json").write_text(
+    json.dumps(result.artifact, indent=2, sort_keys=True, allow_nan=False) + "\n"
+)
+(directory / "explanation_action_evaluation.md").write_text(
+    build_action_evaluation_markdown(result.artifact)
+)
+result.action_quality.to_csv(directory / "action_quality.csv", index=False)
+```
+
+The normal `sentinel-evaluate within-project` and `cross-project` commands
+also produce these artifacts and append the report section automatically.
+
+These diagnostics do **not** prove an explanation is correct or causal, that
+guidance is useful to a human, or that following an action will prevent defects.
+Top-k truncation may inflate top-feature share and omits some attribution
+magnitude; stability cannot compare incompatible retained feature sets. Evidence
+coverage rewards available categories, even though recurrence is not expected
+for every useful action. Sparse data and missing metadata limit comparisons.
+All existing risk-label, attribution, and repository lifecycle limitations apply.
+
+## V6 Phase 7 — Risk Calibration & Threshold Analysis
+
+Phase 7 compares existing predicted risk scores with observed defect labels and
+evaluates decision thresholds. It uses only the selected models' retained
+`risk_ranking` rows: the temporal test partition within a project, or each
+held-out project's evaluation outputs in cross-project mode. It never fits a
+model, recomputes predictions, applies probability recalibration, or changes
+the existing validation-selected decision thresholds, metrics, risk-summary
+cutoff, explanations, or inspection queues.
+
+### Calibration definitions and bins
+
+For `N` valid labeled samples, risk `p_i` in [0, 1] and label `y_i` in {0, 1}:
+
+- **Brier score** = `sum((p_i - y_i)^2) / N`. Lower is better; perfect binary
+  predictions score 0, completely wrong binary predictions score 1. This
+  measures overall probability error, including discrimination as well as
+  calibration.
+- **Reliability data**: for each bin, report its bounds, sample count, mean
+  predicted risk and observed defect rate (mean binary label). Calibration
+  means, for example, that samples assigned risk near 0.7 have the observed
+  defect label about 70% of the time.
+- **Expected Calibration Error (ECE)** =
+  `sum_b((n_b / N) * abs(mean_risk_b - observed_rate_b))`, over populated bins.
+  Lower is better; ECE 0 means the populated bin means agree with their
+  observed frequencies, even if individual predictions are imperfect.
+
+`--calibration-bins` is a positive integer (default 10). Bins have equal width
+over [0, 1], with edges generated by `numpy.linspace(0, 1, bins + 1)`. Bins
+include their lower edge and exclude their upper edge; the final bin includes
+1. Scores exactly on a stored internal edge go to the bin on the right. The
+JSON records the actual floating-point edges. All bins are emitted, including
+empty bins with count 0 and **blank mean/rate cells**, never invented zeros.
+Constant scores occupy one bin. A single sample or single-class labels still
+support Brier and ECE; no minimum sample size is claimed to establish confidence.
+
+### Threshold definitions and recommendation
+
+The default candidates are 0, 0.05, 0.10, …, 1.00. Override them with
+`--analysis-thresholds 0.2 0.4 0.6 0.8`. Candidates must be finite and in [0, 1];
+duplicates are removed and candidates are sorted ascending. The list must not
+be empty. A sample is flagged when `risk_score >= threshold`.
+
+For the resulting true positives (TP), false positives (FP), true negatives
+(TN) and false negatives (FN):
+
+| Metric | Definition |
+| --- | --- |
+| Precision | `TP / (TP + FP)` |
+| Recall | `TP / (TP + FN)` |
+| F1 | `2 * TP / (2 * TP + FP + FN)` |
+| Specificity | `TN / (TN + FP)` |
+| False positive rate | `FP / (TN + FP)` |
+| Files flagged | `TP + FP` |
+| Percentage of files flagged | `100 * (TP + FP) / N` |
+
+**Sample unit:** these are evaluated **file snapshots**, not distinct paths.
+A Java file appearing at several evaluation dates is counted several times.
+All metrics and flagged counts use the same valid labeled samples. Missing
+labels are excluded even if a score is available; these counts are not an
+estimate of workload for the excluded samples.
+
+The recommendation maximizes F1 **among the supplied candidates**. Exact F1
+ties choose the **highest threshold**, regardless of candidate/input row order.
+This favors fewer or equal flagged samples among tied candidates. Precision
+need not increase as the cutoff rises; recall cannot increase. No recommendation
+is made without valid samples containing at least one positive label. An
+all-positive evaluation can produce a recommendation, but cannot measure
+specificity or false positive rate.
+
+This is a **retrospective, evaluation-derived operating point**, not a universally
+optimal or deployment-ready threshold. It uses evaluation labels to describe
+tradeoffs and its reported optimum is optimistic for future deployment. It
+does not replace the validation-selected model threshold or feed back into
+training, model selection, official held-out metrics, or prior Phase 1–6
+artifacts. A proposed operational change needs independent future validation
+and an assessment of inspection costs and missed defects.
+
+### Missing data and project isolation
+
+Valid pairs require a finite score in [0, 1] and an exact binary label. Numeric
+strings are accepted. Missing columns/values, nonnumeric values, infinities,
+out-of-range scores, and nonbinary labels are excluded; no clipping, imputation
+or fractional-label truncation is used. Summary counts expose exclusions;
+invalid-score and invalid-label counts may overlap.
+
+Undefined metrics use **`null` in JSON, blank cells in CSV, and `N/A` in
+Markdown**, following existing artifact conventions. Phase 7 treats every
+zero denominator as undefined; this does not change the legacy classifier
+metrics' zero-division convention. For example, precision is unavailable when
+no samples are flagged; recall is unavailable without positives. F1 is zero
+when its denominator is positive and TP is zero, and unavailable when its
+denominator is zero. With no valid pairs, Brier/ECE and the recommendation are
+null, bin/flag counts are zero, and flagged percentages are null. JSON writers
+use `allow_nan=False`.
+
+Every project gets its own bins, metrics and recommendation. The cross-project
+summary has `analysis_scope = "per_project"`, a `projects` list and **no pooled
+calibration metric or threshold recommendation**. Changing another project's
+scores, labels or sample count cannot change this project's analysis. Rows
+with missing/blank/non-string project identities in cross-project mode are
+excluded and counted in `excluded_unknown_project_samples`, never grouped into
+a fictitious held-out project. Within-project input can retain an unknown
+identity as JSON null/CSV blank. Known project names are preserved exactly.
+
+### Artifact schemas and report integration
+
+Both existing evaluation commands generate these three additional artifacts,
+and append **Risk Calibration & Operating Threshold** to `report.md`:
+
+- `calibration.csv`: `project, bin_lower, bin_upper, sample_count,
+  mean_predicted_risk, observed_defect_rate`. One row per bin per project.
+- `threshold_analysis.csv`: `project, threshold, precision, recall, f1,
+  specificity, false_positive_rate, files_flagged, percentage_files_flagged`.
+  One row per distinct evaluated threshold per project.
+- `calibration_summary.json`: `schema_version` (1), `experiment_type`,
+  `analysis_scope`, `project_count`, `total_samples`,
+  `excluded_unknown_project_samples`, `projects`, `metadata`, and `limitations`.
+  Each project entry contains its identity, total/valid/excluded samples,
+  invalid-score/invalid-label counts, positive/negative label counts,
+  `brier_score`, `ece`, `populated_bins`, `recommended_threshold`,
+  `recommendation_criterion` (`maximum_f1`), `recommendation_status`
+  (`available`, `no_valid_samples`, or `no_positive_labels`),
+  `metrics_at_recommended_threshold` (all threshold-row fields except project,
+  or null), `score_methods` and `unknown_score_method_samples`. Metadata records
+  bin edges, threshold candidates, formulas, tie-breaking, sample unit,
+  missing-data rules, and retrospective-only recommendation scope.
+
+The report explains the metrics and limits and shows each project's recommended
+threshold, precision, recall, F1 and flagged count/percentage. Its table reports
+valid samples and populated bins so sparse results remain visible.
+
+### Analyze existing artifacts without retraining
+
+Use the artifact-only command when a risk ranking already exists:
+
+```bash
+python -m sentinel.evaluation calibrate reports/commons-lang-within/risk_ranking.csv \
+  --evaluation-mode within_project \
+  --calibration-bins 10 \
+  --analysis-thresholds 0.2 0.4 0.6 0.8
+
+python -m sentinel.evaluation calibrate reports/cross-project/risk_ranking.csv \
+  --evaluation-mode cross_project
+```
+
+Output defaults to the source CSV's directory; `--output-dir DIR` overrides it.
+The command writes only the three Phase 7 files and adds or replaces its section
+in `report.md`, preserving other sections. In a new directory it creates a
+Phase 7 report section. Repeating the same analysis is deterministic. Reading
+with `float_precision="round_trip"` preserves saved score precision, including
+scores at candidate/bin boundaries.
+
+Reusable Python API (no model objects required):
+
+```python
+import pandas as pd
+from sentinel.evaluation import build_risk_calibration, save_risk_calibration
+
+result = build_risk_calibration(
+    pd.read_csv("reports/cross-project/risk_ranking.csv", float_precision="round_trip"),
+    experiment_type="cross_project",
+    calibration_bins=10,
+    analysis_thresholds=[0.2, 0.4, 0.6, 0.8],
+)
+save_risk_calibration(result, "reports/cross-project")
+```
+
+For a new evaluation, the same two options are available on
+`sentinel-evaluate within-project` and `cross-project`. The Python adapters
+accept `calibration_bins` and `analysis_thresholds` and retain their result as
+`EvaluationReport.risk_calibration`. Older report constructors still work:
+saving them derives Phase 7 from their retained rankings with default options.
+
+### Interpretation limits
+
+Calibration here concerns the heuristic future-defect label, which is not
+ground-truth defect causation. Sigmoid-mapped decision margins remain ranking
+scores; computing Brier/ECE does not establish calibrated probabilities.
+ECE depends on bin count and can hide within-bin errors. Repeated paths and
+overlapping 90-day label windows create dependent samples. Small datasets,
+empty bins, single-class labels, exclusion of missing data, project shifts and
+future drift limit interpretation. Phase 7 supplies no confidence intervals,
+formal calibration test, recalibration fit, or evidence that an inspection
+action prevents a defect.
+
 ## Tests
 
-Run the full V1 through V5 test suite:
+Run the full V1 through V6 test suite:
 
 ```bash
 pytest
 ```
+
+
+## V6 Phase 8 — Temporal Leakage Correction & Final Revalidation
+
+This is a correctness correction. The three baseline models, eight predictors,
+`defect_next_90_days` definition, validation PR-AUC model selection, validation
+F1 threshold selection, explanations, risk ranking, diagnostics, and calibration
+formulas remain unchanged. The retained monthly within-project and bounded
+quarterly LOPO studies have been revalidated, with all dependent V5–V6 outputs
+regenerated. The evidence and its limits are summarized below; a code audit
+alone does not establish experimental performance.
+
+### Provenance contract
+
+`sentinel-features` writes the unchanged feature CSV plus
+`<features.csv>.metadata.json`. Schema version 1 records `generator_version`,
+`target`, `horizon_days` (90), `date_convention`, `history_hash_basis`, the exact
+`feature_csv_sha256`, and a `repositories` mapping. Each repository entry has
+`observation_end`, `source_history_sha256`, `feature_frame_sha256`, and `row_count`.
+Observation coverage comes from the latest observed Java change in the supplied
+mining history, never the last feature snapshot. CLI generation hashes the source
+history file; direct library generation hashes its dataframe CSV representation.
+The canonical feature hash binds identities, eight predictors, and labels.
+These hashes bind the supplied evidence; they do not certify the completeness of
+a Git extraction or the correctness of heuristic bug-fix labels.
+
+Training automatically reads adjacent sidecars. `--dataset-metadata PATH` can
+select a sidecar or a manifest:
+
+```json
+{"schema_version": 1, "sidecars": {"owner/alpha": "alpha.csv.metadata.json", "owner/beta": "beta.csv.metadata.json"}}
+```
+
+Paths in a manifest are relative to that manifest. Repositories in the same CSV
+must reference the same sidecar. Missing provenance is loadable for inspection
+but rejected for prospective splitting/training. Incompatible or stale hashes
+are errors. Do not manufacture metadata for old CSVs from their snapshot dates:
+rebuild features from the original history, compare CSVs, and review coverage.
+
+### Mature-label rules
+
+Dates are normalized to UTC calendar days. A snapshot at `t` uses historical
+features through that day and labels events in `(t, t + 90 days]`. Let `V` be
+validation start, `T` test start, `E` test end, and `O[r]` repository coverage.
+
+| Partition | Required eligibility |
+|---|---|
+| Training | `t + 90 days < V` |
+| Validation | `t >= V` and `t + 90 days < T` |
+| Test | `T <= t <= E` and `t + 90 days <= O[r]` |
+
+Equality at the next partition start is excluded: the complete endpoint day
+must have elapsed before that partition starts. The horizon is exactly 90 days,
+including across leap years, never three calendar months. The purge removes
+candidate snapshots in the 90-day interval preceding each next partition.
+No additional post-test embargo is needed for these forward-only folds.
+
+Within-project defaults choose candidate boundaries using the existing distinct
+snapshot-date fractions, then purge without reallocating rows. Optionally supply
+both `--validation-start` and `--test-start`. Cross-project evaluation requires
+both explicitly and applies them globally across every source and held-out fold.
+`--test-end` defaults to `min(O[r]) - 90 days` across supplied repositories;
+an explicit end cannot exceed it. This shared schedule can lose substantial data
+or fail when repository histories do not overlap. It prevents modern source
+history from predicting a held-out project's past. Choose and freeze dates before
+looking at outcomes; the software cannot prove a human did not tune CLI dates.
+
+No boundary shifts depend on scores or class balance. Empty partitions or missing
+required repositories fail with an explanation. Training still requires both
+classes; single-class validation/test behavior follows existing metric rules.
+
+### CLI and audit artifacts
+
+The temporal options are shared by `sentinel-train`, `sentinel-cross-project`,
+and the within/cross-project subcommands of `sentinel-evaluate`:
+
+```bash
+# Set calendar dates for the study before inspecting evaluation outcomes.
+export VALIDATION_START=2020-01-01
+export TEST_START=2021-01-01
+sentinel-evaluate within-project data/alpha_features.csv \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  --output-dir reports/alpha-phase8
+sentinel-evaluate cross-project data/alpha_features.csv data/beta_features.csv \
+  --validation-start "$VALIDATION_START" --test-start "$TEST_START" \
+  --output-dir reports/cross-phase8
+```
+
+The dates above are illustrative and may leave insufficient eligible history.
+The existing 21 V6 artifact names and schemas are retained with additive audit
+metadata in `metrics.json` and a Temporal Maturity Audit in `report.md`. V3
+`metadata.json` and V4 `report.json`/`report.md` also carry the protocol. Audits
+record `mature_labels_v1`, horizon, boundaries, provenance, candidate and retained
+counts, exclusions by repository/reason/date range, partition hashes, and named
+invariant checks. Live partitions are rechecked before fitting. Legacy report
+objects still render but their temporal maturity is explicitly legacy/unverified.
+A same-project comparison is unavailable unless its maturity protocol, calendar
+boundaries, and test evidence match the corresponding cross-project fold.
+Artifact-only Phase 7 analysis remains retrospective and does not upgrade legacy
+evaluation validity or replace validation-selected thresholds.
+
+### Completed final revalidation
+
+The retained real-data runs use seed 42 and unchanged model configurations.
+Within-project commons-lang uses validation start `2019-03-31` and test start
+`2022-10-31`, retaining 152,016 training, 51,942 validation, and 62,008 test
+snapshots after purging 6,303 immature labels. The four-project LOPO study uses
+quarter-end inputs from `2023-06-30` through `2026-03-31`, shared validation
+start `2025-09-30`, and test dates `2025-12-31` through `2026-03-31`. Its four
+held-out test populations total 12,920 snapshots. All five evaluations selected
+Logistic Regression by validation PR-AUC.
+
+Both output directories contain the complete 21-artifact V6 report. The final
+release audit recomputed all five partitions and maturity checks from the
+retained CSVs/sidecars, matched test identities and labels, checked reported
+classification metrics and confusion matrices, verified deterministic ranking,
+and reproduced all six calibration outputs byte-for-byte. Source-history hashes
+and observation endpoints match the retained histories. The original Phase 8
+record also documents byte-identical feature regeneration and reconstruction
+of 404 sampled snapshots. See [V6_RELEASE_SUMMARY.md](V6_RELEASE_SUMMARY.md)
+for measured results and the distinction between retained evidence and fresh
+checks. Full real-data model fitting was not repeated during release preparation.
+
+The local evidence is under `artifacts/v6-phase8-revalidation/`, including
+`REVALIDATION_REPORT.md`, `protocol.json`, `environment.json`, `datasets.json`,
+`preflight.json`, `populations.json`, `history-reconstruction.json`,
+`artifact-verification.json`, `comparison.json`, and
+`calibration-reproducibility.json`. This directory is intentionally ignored;
+a fresh clone contains the source, tests, and documented summary, not these
+experimental inputs or results. Reproducing exact numbers requires the same
+hash-identified mining histories and software environment; mining current GitHub
+HEAD can produce different data.
+
+Calibration remains imperfect and validation-selected thresholds remain
+project-sensitive. JUnit4 has no positive labels in its frozen test period, so
+ROC-AUC, PR-AUC, and a retrospective threshold recommendation are unavailable.
+Repeated snapshots, overlapping test outcome windows, heuristic labels,
+lifecycle limitations, limited projects, and retrospective threshold analysis
+still limit independence, ground-truth validity, and generalization claims.

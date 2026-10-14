@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +24,12 @@ from sentinel.ml.evaluation import (
     DEFAULT_THRESHOLD,
     calculate_metrics,
     extract_feature_importance,
+    positive_class_scores,
     select_f1_threshold,
 )
 from sentinel.ml.models import DEFAULT_RANDOM_STATE, MODEL_ORDER, build_model_pipelines
 from sentinel.ml.splitting import TemporalSplits
+from sentinel.ml.temporal import audit_mature_partitions
 
 
 ProgressCallback = Callable[[str], None]
@@ -40,6 +42,8 @@ class ModelResult:
     name: str
     pipeline: Pipeline
     selected_threshold: float
+    score_method: str
+    test_scores: np.ndarray
     validation_default: dict[str, Any]
     validation_selected: dict[str, Any]
     test_default: dict[str, Any]
@@ -56,21 +60,11 @@ class TrainingResult:
     models: dict[str, ModelResult]
     best_model_name: str
     random_state: int
+    temporal_audit: dict[str, Any] = field(default_factory=dict)
 
     @property
     def best_model(self) -> ModelResult:
         return self.models[self.best_model_name]
-
-
-def _positive_probabilities(pipeline: Pipeline, features: pd.DataFrame) -> np.ndarray:
-    probabilities = pipeline.predict_proba(features)
-    model = pipeline.named_steps["model"]
-    classes = list(model.classes_)
-    if 1 not in classes:
-        raise InvalidDatasetError(
-            "The training split did not produce a positive-class probability."
-        )
-    return np.asarray(probabilities[:, classes.index(1)], dtype=float)
 
 
 def _feature_importance(
@@ -138,7 +132,10 @@ def train_baselines(
     progress: ProgressCallback | None = None,
 ) -> TrainingResult:
     """Fit on training only, tune thresholds on validation, then score test once."""
+    temporal_audit = audit_mature_partitions(dict(splits.frames()), splits.temporal_context)
     feature_columns = list(feature_columns)
+    if feature_columns != MODEL_FEATURE_COLUMNS:
+        raise InvalidDatasetError("Prospective training requires the eight historical predictor whitelist.")
     train_classes = set(splits.train[TARGET_COLUMN].unique())
     if train_classes != {0, 1}:
         raise InvalidDatasetError(
@@ -159,7 +156,12 @@ def train_baselines(
             progress(f"Training {name}...")
         pipeline = pipelines[name]
         pipeline.fit(train_features, train_target)
-        validation_scores = _positive_probabilities(pipeline, validation_features)
+        try:
+            validation_scores, score_method = positive_class_scores(
+                pipeline, validation_features
+            )
+        except ValueError as exc:
+            raise InvalidDatasetError(str(exc)) from exc
         selected_threshold = select_f1_threshold(
             validation_target, validation_scores
         )
@@ -167,6 +169,8 @@ def train_baselines(
             name=name,
             pipeline=pipeline,
             selected_threshold=selected_threshold,
+            score_method=score_method,
+            test_scores=np.array([], dtype=float),
             validation_default=calculate_metrics(
                 validation_target, validation_scores, DEFAULT_THRESHOLD
             ),
@@ -190,7 +194,14 @@ def train_baselines(
     test_target = splits.test[TARGET_COLUMN].to_numpy()
     for name in MODEL_ORDER:
         model_result = validation_results[name]
-        test_scores = _positive_probabilities(model_result.pipeline, test_features)
+        try:
+            test_scores, score_method = positive_class_scores(
+                model_result.pipeline, test_features
+            )
+        except ValueError as exc:
+            raise InvalidDatasetError(str(exc)) from exc
+        model_result.score_method = score_method
+        model_result.test_scores = test_scores
         model_result.test_default = calculate_metrics(
             test_target, test_scores, DEFAULT_THRESHOLD
         )
@@ -212,6 +223,7 @@ def train_baselines(
         models=validation_results,
         best_model_name=best_model_name,
         random_state=random_state,
+        temporal_audit=temporal_audit,
     )
 
 
@@ -239,8 +251,9 @@ def build_metadata(result: TrainingResult) -> dict[str, Any]:
         "random_state": result.random_state,
         "selected_threshold": best.selected_threshold,
         "leakage_audit": {
-            "status": "passed",
-            "split_strategy": "chronological_distinct_snapshot_dates_70_15_15",
+            "status": result.temporal_audit.get("status", "legacy_unverified"),
+            "split_strategy": result.temporal_audit.get("protocol", "legacy_unverified"),
+            "temporal_maturity": result.temporal_audit or {"status": "legacy_unverified"},
             "same_date_rows_grouped": True,
             "preprocessing_fit_scope": "training_only",
             "threshold_selection_scope": "validation_only",

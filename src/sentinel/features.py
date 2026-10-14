@@ -11,6 +11,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from sentinel.provenance import (
+    LABEL_WINDOW_DAYS, PROVENANCE_KEY, build_feature_metadata,
+    save_feature_metadata, sha256_file,
+)
+
 
 HISTORY_COLUMNS = [
     "repository",
@@ -39,7 +44,6 @@ FEATURE_COLUMNS = [
     "defect_next_90_days",
 ]
 
-LABEL_WINDOW_DAYS = 90
 
 # Word boundaries prevent broad matches such as "fixture", "debug", and
 # "exceptional" while still accepting punctuation such as "fix: null handling".
@@ -129,7 +133,9 @@ def _month_ends(first_change_day: pd.Timestamp, last_eligible_day: pd.Timestamp)
     )
 
 
-def build_file_snapshots(history: pd.DataFrame) -> pd.DataFrame:
+def build_file_snapshots(
+    history: pd.DataFrame, *, source_history_sha256: str | None = None,
+) -> pd.DataFrame:
     """Create cumulative monthly file features and future 90-day defect labels.
 
     Features use changes on or before each UTC snapshot date. Labels alone inspect
@@ -203,7 +209,11 @@ def build_file_snapshots(history: pd.DataFrame) -> pd.DataFrame:
             "History does not contain a file with a complete 90-day label window."
         )
 
-    return pd.DataFrame(rows, columns=FEATURE_COLUMNS)
+    features = pd.DataFrame(rows, columns=FEATURE_COLUMNS)
+    features.attrs[PROVENANCE_KEY] = build_feature_metadata(
+        history, features, source_history_sha256=source_history_sha256
+    )
+    return features
 
 
 def default_output_path(input_path: str | Path) -> Path:
@@ -220,6 +230,8 @@ def export_features(data: pd.DataFrame, output_path: str | Path) -> Path:
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     data.to_csv(destination, index=False, columns=FEATURE_COLUMNS)
+    if PROVENANCE_KEY in data.attrs:
+        save_feature_metadata(data, destination)
     return destination
 
 
@@ -246,7 +258,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if source == output_path.expanduser().resolve():
             raise FeatureEngineeringError("Input and output CSV paths must differ.")
         history = pd.read_csv(source)
-        features = build_file_snapshots(history)
+        features = build_file_snapshots(history, source_history_sha256=sha256_file(source))
         destination = export_features(features, output_path)
     except (
         FeatureEngineeringError,

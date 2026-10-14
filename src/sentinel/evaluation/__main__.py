@@ -1,4 +1,4 @@
-"""Allow ``python -m sentinel.evaluation`` to run V5 evaluation."""
+"""Allow ``python -m sentinel.evaluation`` to run unified evaluation."""
 
 from sentinel.evaluation.cli import main
 
